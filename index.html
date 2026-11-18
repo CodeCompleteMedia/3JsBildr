@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>3JsBildr</title>
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M1 13 6 4l3 5 2-3 4 7z' fill='%234fcf55'/%3E%3C/svg%3E" />
+  </head>
+  <body>
+    <canvas id="view"></canvas>
+
+    <div id="hud">
+      <div class="tag">3JsBildr</div>
+
+      <nav id="rail" aria-label="Brushes">
+        <button data-brush="raise" title="Raise (1)"><i>▲</i><span>Raise</span><kbd>1</kbd></button>
+        <button data-brush="lower" title="Lower (2)"><i>▼</i><span>Lower</span><kbd>2</kbd></button>
+        <button data-brush="smooth" title="Smooth (3)"><i>≈</i><span>Smooth</span><kbd>3</kbd></button>
+        <button data-brush="flatten" title="Flatten (4)"><i>▬</i><span>Flatten</span><kbd>4</kbd></button>
+      </nav>
+
+      <div id="dials">
+        <label>
+          <span>Size <kbd>[</kbd><kbd>]</kbd></span>
+          <input id="radius" type="range" step="0.1" />
+          <output id="radius-out"></output>
+        </label>
+        <label>
+          <span>Strength <kbd>-</kbd><kbd>=</kbd></span>
+          <input id="strength" type="range" step="0.5" />
+          <output id="strength-out"></output>
+        </label>
+      </div>
+
+      <div id="actions">
+        <button id="undo" title="Undo (Cmd/Ctrl+Z)">Undo</button>
+        <button id="redo" title="Redo (Shift+Cmd/Ctrl+Z)">Redo</button>
+        <span class="gap"></span>
+        <button id="new" title="Generate fresh land">New land</button>
+        <button id="export" title="Download the terrain as JSON">Export</button>
+        <button id="import" title="Load a terrain JSON file">Import</button>
+        <span class="gap"></span>
+        <button id="explore" title="Hide the tools and explore like a visitor (V)">Explore <kbd>V</kbd></button>
+      </div>
+
+      <div id="altitude" title="Camera height">
+        <span>Table</span>
+        <div class="track"><div id="altitude-dot"></div></div>
+        <span>Ground</span>
+      </div>
+
+      <div id="hint">
+        <b>Drag</b> sculpt <em>·</em> <b>Shift</b> reverse <em>·</em> <b>Scroll</b> zoom to cursor <em>·</em>
+        <b>Right-drag</b> or <b>Alt-drag</b> orbit <em>·</em> <b>Space-drag</b> pan <em>·</em>
+        <b>WASD</b> move <em>·</em> <b>Q E</b> turn <em>·</em> <b>0</b> reset view <em>·</em> <b>H</b> hide this
+      </div>
+
+      <div id="explore-hint"><b>Drag</b> look <em>·</em> <b>Scroll</b> zoom <em>·</em> <b>WASD</b> move <em>·</em> <b>V</b> back to tools</div>
+
+      <div id="toast" role="status"></div>
+    </div>
+
+    <input id="file" type="file" accept="application/json,.json" hidden />
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
