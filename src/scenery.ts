@@ -2,58 +2,6 @@ import * as THREE from 'three';
 import { palette } from './palette';
 import { BASE_Y, WATER_LEVEL, WORLD_SIZE } from './terrain';
 
-/** A gradient dome that follows the camera. */
-export function createSky(): THREE.Mesh {
-  const geometry = new THREE.SphereGeometry(1500, 32, 16);
-  const top = new THREE.Color(palette.skyTop);
-  const horizon = new THREE.Color(palette.skyHorizon);
-  const bottom = new THREE.Color(palette.skyBottom);
-  const position = geometry.attributes.position;
-  const colors = new Float32Array(position.count * 3);
-  const c = new THREE.Color();
-  for (let i = 0; i < position.count; i++) {
-    const t = position.getY(i) / 1500;
-    if (t >= 0) c.copy(horizon).lerp(top, Math.pow(t, 0.55));
-    else c.copy(horizon).lerp(bottom, Math.pow(-t, 0.6));
-    colors[i * 3] = c.r;
-    colors[i * 3 + 1] = c.g;
-    colors[i * 3 + 2] = c.b;
-  }
-  geometry.setAttribute('color', new THREE.BufferAttribute(colors, 3));
-  const sky = new THREE.Mesh(
-    geometry,
-    new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide, fog: false, depthWrite: false }),
-  );
-  sky.renderOrder = -1;
-  sky.frustumCulled = false;
-  return sky;
-}
-
-/** Warm sun with soft shadows plus sky/bounce fill. */
-export function createLights(): THREE.Group {
-  const group = new THREE.Group();
-
-  group.add(new THREE.HemisphereLight(palette.skyLight, palette.bounceLight, 1.15));
-
-  const sun = new THREE.DirectionalLight(palette.sun, 3.0);
-  sun.position.set(150, 150, 60);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(2048, 2048);
-  const reach = WORLD_SIZE * 0.82;
-  sun.shadow.camera.left = -reach;
-  sun.shadow.camera.right = reach;
-  sun.shadow.camera.top = reach;
-  sun.shadow.camera.bottom = -reach;
-  sun.shadow.camera.near = 20;
-  sun.shadow.camera.far = 420;
-  sun.shadow.bias = -0.0004;
-  sun.shadow.normalBias = 0.35;
-  sun.shadow.radius = 3;
-  group.add(sun, sun.target);
-
-  return group;
-}
-
 /** A block of water filling the slab up to the water line. */
 export function createWater(): THREE.Mesh {
   const depth = WATER_LEVEL - BASE_Y - 0.05;
@@ -62,7 +10,7 @@ export function createWater(): THREE.Mesh {
     new THREE.MeshStandardMaterial({
       color: palette.water,
       transparent: true,
-      opacity: 0.78,
+      opacity: 0.86,
       roughness: 0.3,
       metalness: 0,
       depthWrite: false,
@@ -73,10 +21,11 @@ export function createWater(): THREE.Mesh {
   return water;
 }
 
-/** Chunky clouds drifting in a ring around the diorama. */
-export function createClouds(count = 11): THREE.Group {
+/** Chunky clouds drifting in a ring around the diorama. `material` is shared so the sky can tint it. */
+export function createClouds(count = 11): { group: THREE.Group; material: THREE.MeshStandardMaterial } {
   const group = new THREE.Group();
-  const material = new THREE.MeshStandardMaterial({ color: palette.cloud,
+  const material = new THREE.MeshStandardMaterial({
+    color: palette.cloud,
     emissive: palette.cloud,
     emissiveIntensity: 0.45,
     flatShading: true,
@@ -106,5 +55,5 @@ export function createClouds(count = 11): THREE.Group {
     cloud.rotation.y = rand() * Math.PI;
     group.add(cloud);
   }
-  return group;
+  return { group, material };
 }

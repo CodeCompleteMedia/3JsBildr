@@ -45,6 +45,9 @@ export class DioramaCamera {
   private pivotY = EYE_HEIGHT;
   private lift = 0;
 
+  /** The point on the ground the camera is centred on. */
+  readonly pivot = new THREE.Vector3();
+
   private readonly dir = new THREE.Vector3();
   private readonly look = new THREE.Vector3();
 
@@ -168,6 +171,8 @@ export class DioramaCamera {
     const ground = Math.max(this.terrain.heightAt(fx, fz), WATER_LEVEL) + EYE_HEIGHT;
     this.pivotY = lerp(this.pivotY, ground, 1 - Math.exp(-dt * 10));
 
+    this.pivot.set(fx, this.pivotY, fz);
+
     const pos = this.camera.position;
     pos.set(fx - this.dir.x * distance, this.pivotY - this.dir.y * distance, fz - this.dir.z * distance);
 
@@ -182,7 +187,7 @@ export class DioramaCamera {
 
     // Push the near plane out with distance to keep depth precise from far away.
     this.camera.fov = fovAt(zoom);
-    this.camera.near = clamp(distance * 0.05, 0.1, 20);
+    this.camera.near = clamp(distance * 0.05, 0.4, 20);
     this.camera.updateProjectionMatrix();
   }
 

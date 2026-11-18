@@ -1,14 +1,16 @@
 import * as THREE from 'three';
-import type { BrushKind } from './brushes';
+import type { Tool } from './brushes';
 import type { Terrain } from './terrain';
 
 const SEGMENTS = 72;
 
-const COLORS: Record<BrushKind, number> = {
+const COLORS: Record<Tool, number> = {
   raise: 0xffffff,
   lower: 0xff5fa2,
   smooth: 0x7df9ff,
   flatten: 0xfff06a,
+  plant: 0x8dff6a,
+  clear: 0xff8a5c,
 };
 
 /** A ring that drapes over the terrain to show where the brush will land. */
@@ -46,7 +48,7 @@ export class BrushCursor {
   }
 
   /** `thickness` is the ring's width in world units (scale it with camera distance). */
-  update(x: number, z: number, radius: number, thickness: number, kind: BrushKind): void {
+  update(x: number, z: number, radius: number, thickness: number, kind: Tool): void {
     const p = this.positions;
     const inner = Math.max(radius - thickness, radius * 0.5);
     for (let s = 0; s <= SEGMENTS; s++) {

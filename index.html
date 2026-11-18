@@ -10,14 +10,27 @@
     <canvas id="view"></canvas>
 
     <div id="hud">
-      <div class="tag">3JsBildr</div>
+      <div class="tag">3JsBildr <span id="plant-count"></span></div>
 
       <nav id="rail" aria-label="Brushes">
-        <button data-brush="raise" title="Raise (1)"><i>▲</i><span>Raise</span><kbd>1</kbd></button>
-        <button data-brush="lower" title="Lower (2)"><i>▼</i><span>Lower</span><kbd>2</kbd></button>
-        <button data-brush="smooth" title="Smooth (3)"><i>≈</i><span>Smooth</span><kbd>3</kbd></button>
-        <button data-brush="flatten" title="Flatten (4)"><i>▬</i><span>Flatten</span><kbd>4</kbd></button>
+        <button data-tool="raise" title="Raise (1)"><i>▲</i><span>Raise</span><kbd>1</kbd></button>
+        <button data-tool="lower" title="Lower (2)"><i>▼</i><span>Lower</span><kbd>2</kbd></button>
+        <button data-tool="smooth" title="Smooth (3)"><i>≈</i><span>Smooth</span><kbd>3</kbd></button>
+        <button data-tool="flatten" title="Flatten (4)"><i>▬</i><span>Flatten</span><kbd>4</kbd></button>
+        <hr />
+        <button data-tool="plant" title="Plant (5)"><i>♣</i><span>Plant</span><kbd>5</kbd></button>
+        <button data-tool="clear" title="Clear plants (6)"><i>✕</i><span>Clear</span><kbd>6</kbd></button>
       </nav>
+
+      <div id="plants" aria-label="What to plant">
+        <button data-plant="forest" title="A mix chosen by height: reeds at the shore, tree ferns low, conifers high">Forest mix</button>
+        <button data-plant="conifer">Conifer</button>
+        <button data-plant="treefern">Tree fern</button>
+        <button data-plant="cycad">Cycad</button>
+        <button data-plant="fern">Ferns</button>
+        <button data-plant="horsetail">Horsetail</button>
+        <button data-plant="rock">Rocks</button>
+      </div>
 
       <div id="dials">
         <label>
@@ -26,7 +39,7 @@
           <output id="radius-out"></output>
         </label>
         <label>
-          <span>Strength <kbd>-</kbd><kbd>=</kbd></span>
+          <span><span id="strength-label">Strength</span> <kbd>-</kbd><kbd>=</kbd></span>
           <input id="strength" type="range" step="0.5" />
           <output id="strength-out"></output>
         </label>
@@ -40,6 +53,7 @@
         <button id="export" title="Download the terrain as JSON">Export</button>
         <button id="import" title="Load a terrain JSON file">Import</button>
         <span class="gap"></span>
+        <button id="miniature" title="Miniature blur when viewed from above (B)">Miniature <kbd>B</kbd></button>
         <button id="explore" title="Hide the tools and explore like a visitor (V)">Explore <kbd>V</kbd></button>
       </div>
 
@@ -49,10 +63,17 @@
         <span>Ground</span>
       </div>
 
+      <div id="time-strip" title="Time of day (, and .)">
+        <span>☀</span>
+        <input id="time" type="range" min="0" max="1" step="0.005" />
+        <span>☾</span>
+        <output id="time-name"></output>
+      </div>
+
       <div id="hint">
-        <b>Drag</b> sculpt <em>·</em> <b>Shift</b> reverse <em>·</em> <b>Scroll</b> zoom to cursor <em>·</em>
+        <b>Drag</b> sculpt or plant <em>·</em> <b>Shift</b> reverse <em>·</em> <b>Scroll</b> zoom to cursor <em>·</em>
         <b>Right-drag</b> or <b>Alt-drag</b> orbit <em>·</em> <b>Space-drag</b> pan <em>·</em>
-        <b>WASD</b> move <em>·</em> <b>Q E</b> turn <em>·</em> <b>0</b> reset view <em>·</em> <b>H</b> hide this
+        <b>WASD</b> move <em>·</em> <b>Q E</b> turn <em>·</em> <b>, .</b> time <em>·</em> <b>0</b> reset view <em>·</em> <b>H</b> hide this
       </div>
 
       <div id="explore-hint"><b>Drag</b> look <em>·</em> <b>Scroll</b> zoom <em>·</em> <b>WASD</b> move <em>·</em> <b>V</b> back to tools</div>

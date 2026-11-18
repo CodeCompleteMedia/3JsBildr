@@ -1,13 +1,17 @@
 import * as THREE from 'three';
 import './style.css';
-import { applyBrush, BRUSH_LIMITS, BRUSHES, type BrushKind } from './brushes';
+import { Atmosphere } from './atmosphere';
+import { applyBrush, BRUSH_LIMITS, TOOLS, type BrushKind, type Tool } from './brushes';
 import { DioramaCamera } from './camera';
 import { BrushCursor } from './cursor';
-import { palette } from './palette';
-import { createClouds, createLights, createSky, createWater } from './scenery';
+import { Foliage, type Plant, type PlantChoice } from './foliage';
+import { Post } from './post';
+import { createClouds, createWater } from './scenery';
 import { Terrain } from './terrain';
 
-const STORAGE_KEY = '3jsbildr:terrain:v1';
+const STORAGE_KEY = '3jsbildr:world:v2';
+const LEGACY_STORAGE_KEY = '3jsbildr:terrain:v1';
+const SETTINGS_KEY = '3jsbildr:settings:v1';
 const HISTORY_LIMIT = 60;
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
@@ -16,87 +20,147 @@ const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi 
 // ---------------------------------------------------------------- scene
 
 const canvas = $<HTMLCanvasElement>('view');
-const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-renderer.setSize(window.innerWidth, window.innerHeight, false);
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: false });
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFShadowMap;
 
 const scene = new THREE.Scene();
-const fog = new THREE.FogExp2(palette.skyHorizon, 0);
-scene.fog = fog;
-
-const sky = createSky();
 const clouds = createClouds();
+const atmosphere = new Atmosphere(clouds.material);
+scene.fog = atmosphere.fog;
+
 const terrain = new Terrain();
-scene.add(sky, clouds, createLights(), terrain.group, createWater());
+const foliage = new Foliage(terrain);
+scene.add(atmosphere.sky, atmosphere.lights, clouds.group, terrain.group, foliage.group, createWater());
 
 const rig = new DioramaCamera(terrain, window.innerWidth / window.innerHeight);
 const cursor = new BrushCursor(terrain);
 scene.add(cursor.mesh);
 
+const post = new Post(renderer, scene, rig.camera);
+
+function resize(): void {
+  const pixelRatio = Math.min(window.devicePixelRatio, 2);
+  renderer.setPixelRatio(pixelRatio);
+  renderer.setSize(window.innerWidth, window.innerHeight, false);
+  post.setSize(window.innerWidth, window.innerHeight, pixelRatio);
+  rig.setAspect(window.innerWidth / window.innerHeight);
+}
+resize();
+window.addEventListener('resize', resize);
+
 // ---------------------------------------------------------------- state
 
 const brush = {
-  kind: 'raise' as BrushKind,
+  tool: 'raise' as Tool,
   radius: BRUSH_LIMITS.radius.initial,
   strength: BRUSH_LIMITS.strength.initial,
+  plant: 'forest' as PlantChoice,
 };
 
-type Drag = 'none' | 'sculpt' | 'orbit' | 'pan';
+type Drag = 'none' | 'stroke' | 'orbit' | 'pan';
 let drag: Drag = 'none';
 let explore = false;
+let miniature = true;
 
 const keys = new Set<string>();
 const pointer = new THREE.Vector2();
 let pointerOverView = false;
 const raycaster = new THREE.Raycaster();
 const hit = new THREE.Vector3();
+const projected = new THREE.Vector3();
 
-let strokeStart: Float32Array | null = null;
+/** Everything a stroke can change, captured so it can be undone. */
+interface Snapshot {
+  heights: Float32Array;
+  plants: Plant[];
+}
+
+let strokeStart: Snapshot | null = null;
 let strokeChanged = false;
 let flattenTarget = 0;
-const undoStack: Float32Array[] = [];
-const redoStack: Float32Array[] = [];
+const undoStack: Snapshot[] = [];
+const redoStack: Snapshot[] = [];
+
+const takeSnapshot = (): Snapshot => ({ heights: terrain.heights.slice(), plants: foliage.snapshot() });
+
+function applySnapshot(snapshot: Snapshot): void {
+  terrain.heights.set(snapshot.heights);
+  terrain.rebuild();
+  foliage.restore(snapshot.plants);
+}
 
 // ---------------------------------------------------------------- saving
 
+function serializeWorld() {
+  return {
+    kind: '3jsbildr-world',
+    version: 2,
+    terrain: terrain.serialize(),
+    plants: foliage.serialize(),
+    timeOfDay: Math.round(atmosphere.time * 1000) / 1000,
+  };
+}
+
+/** Accepts a full world file, or a terrain-only file from the first version. */
+function loadWorld(data: unknown): boolean {
+  const file = data as { kind?: string; terrain?: unknown; plants?: unknown; timeOfDay?: unknown } | null;
+  if (file?.kind === '3jsbildr-world') {
+    if (!terrain.load(file.terrain)) return false;
+    foliage.load(file.plants);
+    if (typeof file.timeOfDay === 'number') setTime(file.timeOfDay);
+    return true;
+  }
+  if (file?.kind === '3jsbildr-terrain') {
+    if (!terrain.load(file)) return false;
+    foliage.load(null);
+    return true;
+  }
+  return false;
+}
+
 function save(): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(terrain.serialize()));
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(serializeWorld()));
   } catch {
-    // Storage can be full or unavailable; the terrain still lives in memory.
+    // Storage can be full or unavailable; the world still lives in memory.
+  }
+}
+
+function saveSettings(): void {
+  try {
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ miniature }));
+  } catch {
+    // Not worth interrupting anyone over.
   }
 }
 
 function restore(): boolean {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? terrain.load(JSON.parse(raw)) : false;
+    const raw = localStorage.getItem(STORAGE_KEY) ?? localStorage.getItem(LEGACY_STORAGE_KEY);
+    return raw ? loadWorld(JSON.parse(raw)) : false;
   } catch {
     return false;
   }
 }
 
-if (!restore()) terrain.generate(1);
-
 // ---------------------------------------------------------------- history
 
-function remember(snapshot: Float32Array): void {
+function remember(snapshot: Snapshot): void {
   undoStack.push(snapshot);
   if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
   redoStack.length = 0;
-  refreshHistoryButtons();
+  refreshHud();
 }
 
-function stepHistory(from: Float32Array[], to: Float32Array[]): void {
+function stepHistory(from: Snapshot[], to: Snapshot[]): void {
+  if (drag === 'stroke') return;
   const snapshot = from.pop();
-  if (!snapshot || drag === 'sculpt') return;
-  to.push(terrain.heights.slice());
-  terrain.heights.set(snapshot);
-  terrain.rebuild();
+  if (!snapshot) return;
+  to.push(takeSnapshot());
+  applySnapshot(snapshot);
   save();
-  refreshHistoryButtons();
+  refreshHud();
 }
 
 const undo = () => stepHistory(undoStack, redoStack);
@@ -104,9 +168,11 @@ const redo = () => stepHistory(redoStack, undoStack);
 
 // ---------------------------------------------------------------- HUD
 
-const railButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#rail button'));
+const toolButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#rail button[data-tool]'));
+const plantButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#plants button[data-plant]'));
 const radiusInput = $<HTMLInputElement>('radius');
 const strengthInput = $<HTMLInputElement>('strength');
+const timeInput = $<HTMLInputElement>('time');
 const toastEl = $('toast');
 let toastTimer = 0;
 
@@ -117,9 +183,16 @@ function toast(message: string): void {
   toastTimer = window.setTimeout(() => toastEl.classList.remove('show'), 1800);
 }
 
-function setBrush(kind: BrushKind): void {
-  brush.kind = kind;
-  for (const button of railButtons) button.classList.toggle('active', button.dataset.brush === kind);
+function setTool(tool: Tool): void {
+  brush.tool = tool;
+  for (const button of toolButtons) button.classList.toggle('active', button.dataset.tool === tool);
+  document.body.classList.toggle('planting', tool === 'plant');
+  $('strength-label').textContent = tool === 'plant' ? 'Density' : 'Strength';
+}
+
+function setPlant(choice: PlantChoice): void {
+  brush.plant = choice;
+  for (const button of plantButtons) button.classList.toggle('active', button.dataset.plant === choice);
 }
 
 function setRadius(value: number): void {
@@ -134,20 +207,33 @@ function setStrength(value: number): void {
   $('strength-out').textContent = brush.strength.toFixed(0);
 }
 
+function setTime(value: number): void {
+  atmosphere.setTime(value);
+  timeInput.value = String(atmosphere.time);
+  $('time-name').textContent = atmosphere.label;
+}
+
+function setMiniature(on: boolean): void {
+  miniature = on;
+  $('miniature').classList.toggle('on', on);
+  saveSettings();
+}
+
 function setExplore(on: boolean): void {
   explore = on;
   document.body.classList.toggle('explore', on);
   if (on) cursor.hide();
 }
 
-function refreshHistoryButtons(): void {
+function refreshHud(): void {
   $<HTMLButtonElement>('undo').disabled = undoStack.length === 0;
   $<HTMLButtonElement>('redo').disabled = redoStack.length === 0;
+  const count = foliage.count;
+  $('plant-count').textContent = count ? `${count.toLocaleString()} plant${count === 1 ? '' : 's'}` : '';
 }
 
-for (const button of railButtons) {
-  button.addEventListener('click', () => setBrush(button.dataset.brush as BrushKind));
-}
+for (const button of toolButtons) button.addEventListener('click', () => setTool(button.dataset.tool as Tool));
+for (const button of plantButtons) button.addEventListener('click', () => setPlant(button.dataset.plant as PlantChoice));
 
 radiusInput.min = String(BRUSH_LIMITS.radius.min);
 radiusInput.max = String(BRUSH_LIMITS.radius.max);
@@ -155,6 +241,8 @@ strengthInput.min = String(BRUSH_LIMITS.strength.min);
 strengthInput.max = String(BRUSH_LIMITS.strength.max);
 radiusInput.addEventListener('input', () => setRadius(Number(radiusInput.value)));
 strengthInput.addEventListener('input', () => setStrength(Number(strengthInput.value)));
+timeInput.addEventListener('input', () => setTime(Number(timeInput.value)));
+timeInput.addEventListener('change', save);
 // Hand the keyboard back to the view after using a control.
 for (const el of document.querySelectorAll<HTMLElement>('#hud button, #hud input')) {
   el.addEventListener('pointerup', () => el.blur());
@@ -163,19 +251,22 @@ for (const el of document.querySelectorAll<HTMLElement>('#hud button, #hud input
 $('undo').addEventListener('click', undo);
 $('redo').addEventListener('click', redo);
 $('explore').addEventListener('click', () => setExplore(true));
+$('miniature').addEventListener('click', () => setMiniature(!miniature));
 
 $('new').addEventListener('click', () => {
-  remember(terrain.heights.slice());
+  remember(takeSnapshot());
   terrain.generate(Math.floor(Math.random() * 1e9));
+  foliage.restore([]);
   save();
+  refreshHud();
   toast('Fresh land. Undo brings the old one back.');
 });
 
 $('export').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify(terrain.serialize())], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify(serializeWorld())], { type: 'application/json' });
   const link = document.createElement('a');
   link.href = URL.createObjectURL(blob);
-  link.download = 'terrain.json';
+  link.download = 'world.json';
   link.click();
   URL.revokeObjectURL(link.href);
 });
@@ -186,10 +277,10 @@ fileInput.addEventListener('change', async () => {
   const file = fileInput.files?.[0];
   fileInput.value = '';
   if (!file) return;
-  const before = terrain.heights.slice();
+  const before = takeSnapshot();
   let ok = false;
   try {
-    ok = terrain.load(JSON.parse(await file.text()));
+    ok = loadWorld(JSON.parse(await file.text()));
   } catch {
     ok = false;
   }
@@ -198,14 +289,30 @@ fileInput.addEventListener('change', async () => {
     save();
     toast(`Loaded ${file.name}`);
   } else {
-    toast("That file isn't a terrain this editor can read.");
+    applySnapshot(before);
+    toast("That file isn't a world this editor can read.");
   }
+  refreshHud();
 });
 
-setBrush(brush.kind);
+// ---------------------------------------------------------------- start-up
+
+try {
+  const settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') as { miniature?: boolean };
+  if (typeof settings.miniature === 'boolean') miniature = settings.miniature;
+} catch {
+  // Fall back to defaults.
+}
+
+setTime(atmosphere.time);
+if (!restore()) terrain.generate(1);
+
+setTool(brush.tool);
+setPlant(brush.plant);
 setRadius(brush.radius);
 setStrength(brush.strength);
-refreshHistoryButtons();
+$('miniature').classList.toggle('on', miniature);
+refreshHud();
 
 // ---------------------------------------------------------------- pointer
 
@@ -239,8 +346,8 @@ canvas.addEventListener('pointerdown', (event) => {
   } else if (event.button === 2 || (primary && (event.altKey || event.ctrlKey || explore))) {
     setDrag('orbit');
   } else if (primary && pick()) {
-    setDrag('sculpt');
-    strokeStart = terrain.heights.slice();
+    setDrag('stroke');
+    strokeStart = takeSnapshot();
     strokeChanged = false;
     flattenTarget = hit.y;
   }
@@ -255,7 +362,7 @@ canvas.addEventListener('pointermove', (event) => {
 
 function endDrag(event: PointerEvent): void {
   if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
-  if (drag === 'sculpt' && strokeStart) {
+  if (drag === 'stroke' && strokeStart) {
     if (strokeChanged) {
       remember(strokeStart);
       save();
@@ -305,14 +412,17 @@ window.addEventListener('keydown', (event) => {
 
   keys.add(event.code);
   if (event.code === 'Space' || event.code === 'Tab' || event.code.startsWith('Arrow')) event.preventDefault();
-  if (event.repeat && !['BracketLeft', 'BracketRight', 'Minus', 'Equal'].includes(event.code)) return;
+  const repeats = ['BracketLeft', 'BracketRight', 'Minus', 'Equal', 'Comma', 'Period'];
+  if (event.repeat && !repeats.includes(event.code)) return;
 
   switch (event.code) {
     case 'Digit1':
     case 'Digit2':
     case 'Digit3':
     case 'Digit4':
-      setBrush(BRUSHES[Number(event.code.slice(5)) - 1]);
+    case 'Digit5':
+    case 'Digit6':
+      setTool(TOOLS[Number(event.code.slice(5)) - 1]);
       if (explore) setExplore(false);
       break;
     case 'BracketLeft':
@@ -326,6 +436,17 @@ window.addEventListener('keydown', (event) => {
       break;
     case 'Equal':
       setStrength(brush.strength + 2);
+      break;
+    case 'Comma':
+      setTime(atmosphere.time - 0.02);
+      save();
+      break;
+    case 'Period':
+      setTime(atmosphere.time + 0.02);
+      save();
+      break;
+    case 'KeyB':
+      setMiniature(!miniature);
       break;
     case 'KeyV':
     case 'Tab':
@@ -347,15 +468,11 @@ window.addEventListener('keydown', (event) => {
 window.addEventListener('keyup', (event) => keys.delete(event.code));
 window.addEventListener('blur', () => keys.clear());
 
-window.addEventListener('resize', () => {
-  renderer.setSize(window.innerWidth, window.innerHeight, false);
-  rig.setAspect(window.innerWidth / window.innerHeight);
-});
-
 // ---------------------------------------------------------------- frame loop
 
 const altitudeDot = $('altitude-dot');
 const held = (...codes: string[]) => codes.some((code) => keys.has(code));
+const REVERSE: Partial<Record<Tool, Tool>> = { raise: 'lower', lower: 'raise', plant: 'clear', clear: 'plant' };
 let last = performance.now();
 
 function frame(now: number): void {
@@ -370,26 +487,31 @@ function frame(now: number): void {
 
   rig.update(dt);
 
-  // Brush: sculpt while held, and keep the ring under the cursor.
-  let kind = brush.kind;
-  if (held('ShiftLeft', 'ShiftRight')) {
-    if (kind === 'raise') kind = 'lower';
-    else if (kind === 'lower') kind = 'raise';
-  }
-  const sculpting = drag === 'sculpt' && strokeStart !== null;
-  const showBrush = !explore && (sculpting || (drag === 'none' && pointerOverView));
+  // Brush: work while held, and keep the ring under the cursor.
+  const shift = held('ShiftLeft', 'ShiftRight');
+  const tool = (shift && REVERSE[brush.tool]) || brush.tool;
+  const stroking = drag === 'stroke' && strokeStart !== null;
+  const showBrush = !explore && (stroking || (drag === 'none' && pointerOverView));
   if (showBrush) {
     // While raising or lowering, aim at the surface as it was when the stroke
     // began. Otherwise the hill grows towards the camera and drags the brush with it.
-    const aimAtSnapshot = sculpting && (kind === 'raise' || kind === 'lower');
-    if (pick(aimAtSnapshot ? strokeStart! : undefined)) {
-      if (sculpting) {
-        applyBrush(terrain, kind, hit.x, hit.z, brush.radius, brush.strength, dt, flattenTarget);
-        strokeChanged = true;
+    const aimAtSnapshot = stroking && (tool === 'raise' || tool === 'lower');
+    if (pick(aimAtSnapshot ? strokeStart!.heights : undefined)) {
+      if (stroking) {
+        if (tool === 'plant') {
+          if (foliage.paint(brush.plant, hit.x, hit.z, brush.radius, brush.strength, dt)) strokeChanged = true;
+        } else if (tool === 'clear') {
+          if (foliage.erase(hit.x, hit.z, brush.radius)) strokeChanged = true;
+        } else {
+          applyBrush(terrain, tool as BrushKind, hit.x, hit.z, brush.radius, brush.strength, dt, flattenTarget);
+          if (foliage.count) foliage.refresh(); // plants ride the ground as it moves
+          strokeChanged = true;
+        }
+        if (strokeChanged) refreshHud();
       }
       const range = rig.camera.position.distanceTo(hit);
       const perPixel = (2 * range * Math.tan(THREE.MathUtils.degToRad(rig.camera.fov) / 2)) / canvas.clientHeight;
-      cursor.update(hit.x, hit.z, brush.radius, clamp(perPixel * 3, 0.05, 2), kind);
+      cursor.update(hit.x, hit.z, brush.radius, clamp(perPixel * 3, 0.05, 2), tool);
     } else {
       cursor.hide();
     }
@@ -397,17 +519,21 @@ function frame(now: number): void {
     cursor.hide();
   }
 
-  // Atmosphere: clear air from above, a little haze once you are down in it.
-  fog.density = 0.011 * rig.zoom ** 3;
-  sky.position.copy(rig.camera.position);
-  clouds.rotation.y += dt * 0.012;
+  atmosphere.update(rig.camera, rig.zoom);
+  foliage.update(dt);
+  clouds.group.rotation.y += dt * 0.012;
   altitudeDot.style.top = `${rig.zoom * 100}%`;
 
-  renderer.render(scene, rig.camera);
+  // Miniature blur: strongest from the table, gone by the time you reach the ground.
+  // The sharp band sits wherever the camera's pivot lands on screen.
+  projected.copy(rig.pivot).project(rig.camera);
+  const focus = clamp((projected.y + 1) / 2, 0.25, 0.75);
+  post.render(miniature ? (1 - rig.zoom) ** 1.5 : 0, focus);
+
   requestAnimationFrame(frame);
 }
 
 requestAnimationFrame(frame);
 
 // Handy from the browser console: bildr.rig.goTo({ zoom: 1, x: 10, z: -5 })
-Object.assign(window, { bildr: { rig, terrain, brush, scene, renderer } });
+Object.assign(window, { bildr: { rig, terrain, foliage, atmosphere, brush, scene, renderer, setTime } });

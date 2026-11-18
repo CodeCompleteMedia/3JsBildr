@@ -5,7 +5,7 @@ export const palette = {
   skyHorizon: 0xffe6bf,
   skyBottom: 0x86d8f2,
 
-  water: 0x1fc3e0,
+  water: 0x12b4dc,
   sand: 0xffd873,
   grassLow: 0x9be64a,
   grassMid: 0x4fcf55,
@@ -18,6 +18,22 @@ export const palette = {
   earth: 0xa8643c,
   bedrock: 0x6b4a6e,
   cloud: 0xffffff,
+
+  // Foliage
+  needles: 0x0f8a6a,
+  needlesLight: 0x19a878,
+  bark: 0x8a4b2e,
+  barkDark: 0x6e3f2a,
+  frond: 0x35c24a,
+  frondLight: 0x74dc4a,
+  cycadFrond: 0xb7e83a,
+  cycadFrondDark: 0x8fd62f,
+  cycadTrunk: 0xc9742f,
+  fern: 0x7fe04a,
+  fernDark: 0x4fc64a,
+  horsetail: 0x2fb7a0,
+  horsetailLight: 0x62dcb8,
+  boulder: 0xa58fd6,
 
   sun: 0xfff1d6,
   skyLight: 0xdff2ff,

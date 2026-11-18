@@ -58,6 +58,8 @@ body.panning #view {
 
 .tag,
 #rail,
+#plants,
+#time-strip,
 #dials,
 #actions,
 #altitude,
@@ -154,6 +156,72 @@ input:focus-visible {
 #rail button.active kbd {
   background: rgba(0, 0, 0, 0.14);
   color: var(--accent-ink);
+}
+
+#rail hr {
+  width: 100%;
+  height: 1px;
+  margin: 3px 0;
+  border: 0;
+  background: var(--panel-edge);
+}
+
+#plant-count {
+  margin-left: 6px;
+  font-weight: 600;
+  color: var(--ink-dim);
+}
+
+#plant-count:empty {
+  display: none;
+}
+
+/* What to plant: appears beside the rail while the plant tool is active */
+#plants {
+  left: 176px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+}
+
+body.planting #plants {
+  display: flex;
+}
+
+#plants button {
+  padding: 7px 12px;
+  text-align: left;
+}
+
+#plants button.active {
+  background: #8dff6a;
+  color: #10330a;
+}
+
+/* Time of day */
+#time-strip {
+  right: 14px;
+  bottom: 14px;
+  width: 262px;
+  padding: 9px 12px;
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+#time-strip output {
+  grid-column: 1 / -1;
+  text-align: center;
+  font-weight: 700;
+  color: var(--ink-dim);
+}
+
+#actions button.on {
+  color: var(--accent);
 }
 
 /* Size and strength */
@@ -253,7 +321,7 @@ input[type='range'] {
   bottom: 14px;
   transform: translateX(-50%);
   padding: 8px 14px;
-  max-width: min(760px, calc(100vw - 540px));
+  max-width: min(760px, calc(100vw - 600px));
   text-align: center;
   line-height: 1.7;
   color: var(--ink-dim);
@@ -284,6 +352,8 @@ body.no-hint #hint {
 /* Explore mode: everything but the view steps aside */
 body.explore .tag,
 body.explore #rail,
+body.explore #plants,
+body.explore #time-strip,
 body.explore #dials,
 body.explore #actions,
 body.explore #hint {
@@ -310,7 +380,7 @@ body.explore #explore-hint {
   transform: translate(-50%, 0);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1100px) {
   #hint {
     display: none;
   }

@@ -2,7 +2,10 @@ import { CELL, HALF, MAX_HEIGHT, MIN_HEIGHT, RES, Terrain, VERTS } from './terra
 
 export type BrushKind = 'raise' | 'lower' | 'smooth' | 'flatten';
 
-export const BRUSHES: BrushKind[] = ['raise', 'lower', 'smooth', 'flatten'];
+/** Everything the left mouse button can do: the sculpting brushes plus foliage. */
+export type Tool = BrushKind | 'plant' | 'clear';
+
+export const TOOLS: Tool[] = ['raise', 'lower', 'smooth', 'flatten', 'plant', 'clear'];
 
 export const BRUSH_LIMITS = {
   radius: { min: 1.5, max: 30, initial: 8 },

@@ -199,6 +199,14 @@ export class Terrain {
     return a + (b - a) * tx + (c - a) * tz + (a - b - c + d) * tx * tz;
   }
 
+  /** How level the ground is at a world position: 1 is flat, 0 is a vertical wall. */
+  levelAt(x: number, z: number): number {
+    const e = CELL * 0.6;
+    const dx = (this.heightAt(x + e, z) - this.heightAt(x - e, z)) / (2 * e);
+    const dz = (this.heightAt(x, z + e) - this.heightAt(x, z - e)) / (2 * e);
+    return 1 / Math.sqrt(1 + dx * dx + dz * dz);
+  }
+
   /**
    * First point where a ray meets the surface. Marches the heightfield directly,
    * so it stays fast and correct while the mesh is being edited. Pass `heights`
