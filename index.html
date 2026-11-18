@@ -34,6 +34,8 @@
         <hr />
         <button data-tool="plant" title="Plant (5)"><i>♣</i><span>Plant</span><kbd>5</kbd></button>
         <button data-tool="clear" title="Clear plants (6)"><i>✕</i><span>Clear</span><kbd>6</kbd></button>
+        <hr />
+        <button data-tool="creature" title="Place creatures: click for one, hold for a herd, Shift to remove (7)"><i>🦕</i><span>Creature</span><kbd>7</kbd></button>
       </nav>
 
       <div id="plants" aria-label="What to plant">
@@ -44,6 +46,15 @@
         <button data-plant="fern">Ferns</button>
         <button data-plant="horsetail">Horsetail</button>
         <button data-plant="rock">Rocks</button>
+      </div>
+
+      <div id="creatures" class="picker" aria-label="Which creature to place">
+        <button data-creature="longneck" title="Tall, slow, travels in herds">Long-neck</button>
+        <button data-creature="plated" title="Low and heavy, plates down its back">Plated</button>
+        <button data-creature="runner" title="Small and quick; bolts when you get close">Runner</button>
+        <button data-creature="flyer" title="Circles in the air above where you click">Flyer</button>
+        <hr />
+        <button id="reroll" title="Give every creature new colours and proportions">Reroll looks</button>
       </div>
 
       <div id="dials">

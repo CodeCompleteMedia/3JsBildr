@@ -3,9 +3,10 @@ import { CELL, MAX_HEIGHT, MIN_HEIGHT, Terrain } from './terrain';
 export type BrushKind = 'raise' | 'lower' | 'smooth' | 'flatten';
 
 /** Everything the left mouse button can do: the sculpting brushes plus foliage. */
-export type Tool = BrushKind | 'plant' | 'clear';
+export type Tool = BrushKind | 'plant' | 'clear' | 'creature' | 'shoo';
 
-export const TOOLS: Tool[] = ['raise', 'lower', 'smooth', 'flatten', 'plant', 'clear'];
+/** The tools on the rail, in number-key order. ('shoo', removing creatures, is Shift + creature.) */
+export const TOOLS: Tool[] = ['raise', 'lower', 'smooth', 'flatten', 'plant', 'clear', 'creature'];
 
 export const BRUSH_LIMITS = {
   radius: { min: 1.5, max: 30, initial: 8 },

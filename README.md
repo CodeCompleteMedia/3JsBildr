@@ -1,6 +1,6 @@
 # 3JsBildr
 
-A terrain editor for building low-poly dioramas in the browser. So far: sculpting, the table-to-ground camera, foliage, time of day and a miniature blur.
+A terrain editor for building low-poly dioramas in the browser. So far: sculpting, the table-to-ground camera, foliage, creatures, time of day and a miniature blur.
 
 ## Run
 
@@ -17,8 +17,8 @@ Then open the address Vite prints (usually http://localhost:5173).
 | --- | --- |
 | Sculpt or plant | Left-drag |
 | Add land | Click an empty space beside the slab |
-| Reverse (raise/lower, plant/clear) | Hold Shift |
-| Tool | 1 Raise, 2 Lower, 3 Smooth, 4 Flatten, 5 Plant, 6 Clear plants |
+| Reverse (raise/lower, plant/clear, place/remove creatures) | Hold Shift |
+| Tool | 1 Raise, 2 Lower, 3 Smooth, 4 Flatten, 5 Plant, 6 Clear plants, 7 Creature |
 | Brush size / strength | `[` `]` / `-` `=` |
 | Zoom (towards the cursor) | Scroll or pinch |
 | Orbit / look around | Right-drag, or Alt-drag |
@@ -33,6 +33,8 @@ Then open the address Vite prints (usually http://localhost:5173).
 | Hide the hint bar | H |
 
 The Plant tool scatters whatever is picked beside the rail. "Forest mix" chooses species by height: horsetails at the shore, tree ferns and cycads low down, conifers higher up, ferns everywhere. Plants only take root where their species can live, and they ride the ground when you sculpt under them.
+
+The Creature tool places whichever animal is picked beside the rail: click for one, hold to gather a herd (some of them young, who follow an adult). Long-necks, plated ones and runners walk with their feet planted on the ground, avoid water, cliffs and the slab edge, and roam around where you put them; flyers circle overhead. Down at ground level they turn to look at you, and runners bolt. "Reroll looks" gives every creature new colours and proportions.
 
 Hover just off the edge of the slab and an outline appears in the empty space; click it to add a tile of fresh land joined to its neighbours (up to 12 tiles). Sculpting, water and planting run across the seams, and Undo removes the tile.
 
@@ -52,6 +54,7 @@ Press P. The readout shows frames per second, the average and worst gap between 
 - `src/ghost.ts`: the outline that offers a new tile
 - `src/brushes.ts`: the four sculpting brushes
 - `src/foliage.ts`: plant models, habitat rules, scattering, instanced rendering and wind
+- `src/creatures.ts`: body plans, walking, wandering and the instanced shapes creatures are built from
 - `src/atmosphere.ts`: sky, sun, fill light and haze for each time of day
 - `src/post.ts`: the miniature (tilt-shift) blur
 - `src/perf.ts`: the frame-time readout
@@ -61,4 +64,4 @@ Press P. The readout shows frames per second, the average and worst gap between 
 - `src/cursor.ts`: the brush ring
 - `src/main.ts`: input, history, HUD wiring, frame loop
 
-In the browser console, `bildr` exposes the camera rig, terrain, foliage, atmosphere and brush, e.g. `bildr.rig.goTo({ zoom: 1, x: 10, z: -5 })`.
+In the browser console, `bildr` exposes the camera rig, terrain, foliage, creatures, atmosphere and brush, e.g. `bildr.rig.goTo({ zoom: 1, x: 10, z: -5 })`.

@@ -3,6 +3,7 @@ import './style.css';
 import { Atmosphere } from './atmosphere';
 import { applyBrush, BRUSH_LIMITS, TOOLS, type BrushKind, type Tool } from './brushes';
 import { DioramaCamera } from './camera';
+import { Creatures, type CreatureKind, type CreatureSpec } from './creatures';
 import { BrushCursor } from './cursor';
 import { Foliage, type Plant, type PlantChoice } from './foliage';
 import { TileGhost } from './ghost';
@@ -34,7 +35,8 @@ scene.fog = atmosphere.fog;
 
 const terrain = new Terrain();
 const foliage = new Foliage(terrain);
-scene.add(atmosphere.sky, atmosphere.lights, clouds.group, terrain.group, foliage.group);
+const creatures = new Creatures(terrain);
+scene.add(atmosphere.sky, atmosphere.lights, clouds.group, terrain.group, foliage.group, creatures.group);
 
 const rig = new DioramaCamera(terrain, window.innerWidth / window.innerHeight);
 const cursor = new BrushCursor(terrain);
@@ -60,6 +62,7 @@ const brush = {
   radius: BRUSH_LIMITS.radius.initial,
   strength: BRUSH_LIMITS.strength.initial,
   plant: 'forest' as PlantChoice,
+  creature: 'longneck' as CreatureKind,
 };
 
 type Drag = 'none' | 'stroke' | 'orbit' | 'pan';
@@ -108,19 +111,26 @@ const projected = new THREE.Vector3();
 interface Snapshot {
   terrain: TerrainSnapshot;
   plants: Plant[];
+  creatures: CreatureSpec[];
 }
 
 let strokeStart: Snapshot | null = null;
 let strokeChanged = false;
+let strokeFirstFrame = false;
 let flattenTarget = 0;
 const undoStack: Snapshot[] = [];
 const redoStack: Snapshot[] = [];
 
-const takeSnapshot = (): Snapshot => ({ terrain: terrain.snapshot(), plants: foliage.snapshot() });
+const takeSnapshot = (): Snapshot => ({
+  terrain: terrain.snapshot(),
+  plants: foliage.snapshot(),
+  creatures: creatures.snapshot(),
+});
 
 function applySnapshot(snapshot: Snapshot): void {
   terrain.restore(snapshot.terrain);
   foliage.restore(snapshot.plants);
+  creatures.restore(snapshot.creatures);
   invalidateShadows();
 }
 
@@ -132,16 +142,18 @@ function serializeWorld() {
     version: 2,
     terrain: terrain.serialize(),
     plants: foliage.serialize(),
+    creatures: creatures.serialize(),
     timeOfDay: Math.round(atmosphere.time * 1000) / 1000,
   };
 }
 
 /** Accepts a full world file, or a terrain-only file from the first version. */
 function loadWorld(data: unknown): boolean {
-  const file = data as { kind?: string; terrain?: unknown; plants?: unknown; timeOfDay?: unknown } | null;
+  const file = data as { kind?: string; terrain?: unknown; plants?: unknown; creatures?: unknown; timeOfDay?: unknown } | null;
   if (file?.kind === '3jsbildr-world') {
     if (!terrain.load(file.terrain)) return false;
     foliage.load(file.plants);
+    creatures.load(file.creatures);
     if (typeof file.timeOfDay === 'number') setTime(file.timeOfDay);
     invalidateShadows();
     return true;
@@ -149,6 +161,7 @@ function loadWorld(data: unknown): boolean {
   if (file?.kind === '3jsbildr-terrain') {
     if (!terrain.load(file)) return false;
     foliage.load(null);
+    creatures.load(null);
     invalidateShadows();
     return true;
   }
@@ -207,6 +220,7 @@ const redo = () => stepHistory(redoStack, undoStack);
 
 const toolButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#rail button[data-tool]'));
 const plantButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#plants button[data-plant]'));
+const creatureButtons = Array.from(document.querySelectorAll<HTMLButtonElement>('#creatures button[data-creature]'));
 const radiusInput = $<HTMLInputElement>('radius');
 const strengthInput = $<HTMLInputElement>('strength');
 const timeInput = $<HTMLInputElement>('time');
@@ -224,7 +238,13 @@ function setTool(tool: Tool): void {
   brush.tool = tool;
   for (const button of toolButtons) button.classList.toggle('active', button.dataset.tool === tool);
   document.body.classList.toggle('planting', tool === 'plant');
-  $('strength-label').textContent = tool === 'plant' ? 'Density' : 'Strength';
+  document.body.classList.toggle('creating', tool === 'creature');
+  $('strength-label').textContent = tool === 'plant' || tool === 'creature' ? 'Density' : 'Strength';
+}
+
+function setCreature(kind: CreatureKind): void {
+  brush.creature = kind;
+  for (const button of creatureButtons) button.classList.toggle('active', button.dataset.creature === kind);
 }
 
 function setPlant(choice: PlantChoice): void {
@@ -292,12 +312,23 @@ function setExplore(on: boolean): void {
 function refreshHud(): void {
   $<HTMLButtonElement>('undo').disabled = undoStack.length === 0;
   $<HTMLButtonElement>('redo').disabled = redoStack.length === 0;
-  const count = foliage.count;
-  $('plant-count').textContent = count ? `${count.toLocaleString()} plant${count === 1 ? '' : 's'}` : '';
+  const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+  const parts: string[] = [];
+  if (foliage.count) parts.push(plural(foliage.count, 'plant'));
+  if (creatures.count) parts.push(plural(creatures.count, 'creature'));
+  $('plant-count').textContent = parts.join(' · ');
 }
 
 for (const button of toolButtons) button.addEventListener('click', () => setTool(button.dataset.tool as Tool));
 for (const button of plantButtons) button.addEventListener('click', () => setPlant(button.dataset.plant as PlantChoice));
+for (const button of creatureButtons) button.addEventListener('click', () => setCreature(button.dataset.creature as CreatureKind));
+$('reroll').addEventListener('click', () => {
+  if (!creatures.count) return;
+  remember(takeSnapshot());
+  creatures.reroll();
+  save();
+  toast('New looks for every creature. Undo brings the old ones back.');
+});
 
 radiusInput.min = String(BRUSH_LIMITS.radius.min);
 radiusInput.max = String(BRUSH_LIMITS.radius.max);
@@ -339,6 +370,7 @@ $('new').addEventListener('click', () => {
   remember(takeSnapshot());
   terrain.generate(Math.floor(Math.random() * 1e9));
   foliage.restore([]);
+  creatures.restore([]);
   invalidateShadows();
   save();
   refreshHud();
@@ -395,6 +427,7 @@ if (!restore()) terrain.generate(1);
 
 setTool(brush.tool);
 setPlant(brush.plant);
+setCreature(brush.creature);
 setRadius(brush.radius);
 setStrength(brush.strength);
 $('miniature').classList.toggle('on', settings.miniature);
@@ -460,6 +493,7 @@ canvas.addEventListener('pointerdown', (event) => {
     setDrag('stroke');
     strokeStart = takeSnapshot();
     strokeChanged = false;
+    strokeFirstFrame = true;
     flattenTarget = hit.y;
   } else if (primary && !explore && pickSlot()) {
     addLand(slot.tx, slot.tz);
@@ -535,6 +569,7 @@ window.addEventListener('keydown', (event) => {
     case 'Digit4':
     case 'Digit5':
     case 'Digit6':
+    case 'Digit7':
       setTool(TOOLS[Number(event.code.slice(5)) - 1]);
       if (explore) setExplore(false);
       break;
@@ -594,7 +629,13 @@ const perf = new PerfMeter(renderer, {
 });
 const altitudeDot = $('altitude-dot');
 const held = (...codes: string[]) => codes.some((code) => keys.has(code));
-const REVERSE: Partial<Record<Tool, Tool>> = { raise: 'lower', lower: 'raise', plant: 'clear', clear: 'plant' };
+const REVERSE: Partial<Record<Tool, Tool>> = {
+  raise: 'lower',
+  lower: 'raise',
+  plant: 'clear',
+  clear: 'plant',
+  creature: 'shoo',
+};
 let last = performance.now();
 
 function frame(now: number): void {
@@ -627,6 +668,10 @@ function frame(now: number): void {
           if (foliage.paint(brush.plant, hit.x, hit.z, brush.radius, brush.strength, dt)) strokeChanged = true;
         } else if (tool === 'clear') {
           if (foliage.erase(hit.x, hit.z, brush.radius)) strokeChanged = true;
+        } else if (tool === 'creature') {
+          if (creatures.place(brush.creature, hit.x, hit.z, brush.radius, brush.strength, dt, strokeFirstFrame)) strokeChanged = true;
+        } else if (tool === 'shoo') {
+          if (creatures.remove(hit.x, hit.z, brush.radius)) strokeChanged = true;
         } else {
           applyBrush(terrain, tool as BrushKind, hit.x, hit.z, brush.radius, brush.strength, dt, flattenTarget);
           foliage.refresh(hit.x, hit.z, brush.radius); // plants ride the ground as it moves
@@ -634,6 +679,7 @@ function frame(now: number): void {
           strokeChanged = true;
         }
         if (strokeChanged) refreshHud();
+        strokeFirstFrame = false;
       }
       const range = rig.camera.position.distanceTo(hit);
       const perPixel = (2 * range * Math.tan(THREE.MathUtils.degToRad(rig.camera.fov) / 2)) / canvas.clientHeight;
@@ -653,6 +699,7 @@ function frame(now: number): void {
 
   atmosphere.update(rig.camera, rig.zoom);
   foliage.update(dt, rig.camera);
+  creatures.update(dt, rig.camera.position, rig.zoom > 0.7);
   clouds.group.rotation.y += dt * 0.012;
   altitudeDot.style.top = `${rig.zoom * 100}%`;
 
@@ -671,4 +718,4 @@ function frame(now: number): void {
 requestAnimationFrame(frame);
 
 // Handy from the browser console: bildr.rig.goTo({ zoom: 1, x: 10, z: -5 })
-Object.assign(window, { bildr: { rig, terrain, foliage, atmosphere, brush, settings, scene, renderer, setTime } });
+Object.assign(window, { bildr: { rig, terrain, foliage, creatures, atmosphere, brush, settings, scene, renderer, setTime } });

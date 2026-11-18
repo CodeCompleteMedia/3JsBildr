@@ -11,6 +11,8 @@ const COLORS: Record<Tool, number> = {
   flatten: 0xfff06a,
   plant: 0x8dff6a,
   clear: 0xff8a5c,
+  creature: 0xffb84d,
+  shoo: 0xff8a5c,
 };
 
 /** A ring that drapes over the terrain to show where the brush will land. */

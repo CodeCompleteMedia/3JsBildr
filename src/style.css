@@ -63,6 +63,7 @@ body.offering #view {
 .tag,
 #rail,
 #plants,
+#creatures,
 #perf,
 #time-strip,
 #dials,
@@ -196,9 +197,37 @@ body.planting #plants {
   display: flex;
 }
 
-#plants button {
+#plants button,
+#creatures button {
   padding: 7px 12px;
   text-align: left;
+}
+
+#creatures {
+  left: 176px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: none;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px;
+}
+
+body.creating #creatures {
+  display: flex;
+}
+
+#creatures hr {
+  width: 100%;
+  height: 1px;
+  margin: 3px 0;
+  border: 0;
+  background: var(--panel-edge);
+}
+
+#creatures button.active {
+  background: #ffb84d;
+  color: #3a2200;
 }
 
 #plants button.active {
@@ -291,7 +320,8 @@ body.stats #perf {
 
 /* With the readout open, the brush rail moves down out of its way. */
 body.stats #rail,
-body.stats #plants {
+body.stats #plants,
+body.stats #creatures {
   top: 284px;
   transform: none;
 }
@@ -448,6 +478,7 @@ body.no-hint #hint {
 body.explore .tag,
 body.explore #rail,
 body.explore #plants,
+body.explore #creatures,
 body.explore #time-strip,
 body.explore #dials,
 body.explore #actions,
