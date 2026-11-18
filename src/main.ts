@@ -5,14 +5,17 @@ import { applyBrush, BRUSH_LIMITS, TOOLS, type BrushKind, type Tool } from './br
 import { DioramaCamera } from './camera';
 import { BrushCursor } from './cursor';
 import { Foliage, type Plant, type PlantChoice } from './foliage';
+import { TileGhost } from './ghost';
+import { PerfMeter } from './perf';
 import { Post } from './post';
-import { createClouds, createWater } from './scenery';
-import { Terrain } from './terrain';
+import { createClouds } from './scenery';
+import { MAX_TILES, Terrain, WATER_LEVEL, type TerrainSnapshot } from './terrain';
 
 const STORAGE_KEY = '3jsbildr:world:v2';
 const LEGACY_STORAGE_KEY = '3jsbildr:terrain:v1';
 const SETTINGS_KEY = '3jsbildr:settings:v1';
 const HISTORY_LIMIT = 60;
+const HISTORY_BYTES = 96 * 1024 * 1024; // undo keeps whole-terrain copies, so cap their total size
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
@@ -31,11 +34,12 @@ scene.fog = atmosphere.fog;
 
 const terrain = new Terrain();
 const foliage = new Foliage(terrain);
-scene.add(atmosphere.sky, atmosphere.lights, clouds.group, terrain.group, foliage.group, createWater());
+scene.add(atmosphere.sky, atmosphere.lights, clouds.group, terrain.group, foliage.group);
 
 const rig = new DioramaCamera(terrain, window.innerWidth / window.innerHeight);
 const cursor = new BrushCursor(terrain);
-scene.add(cursor.mesh);
+const ghost = new TileGhost();
+scene.add(cursor.mesh, ghost.group);
 
 const post = new Post(renderer, scene, rig.camera);
 
@@ -61,18 +65,48 @@ const brush = {
 type Drag = 'none' | 'stroke' | 'orbit' | 'pan';
 let drag: Drag = 'none';
 let explore = false;
-let miniature = true;
+
+// Everything adjustable that isn't part of the world itself. Saved between visits.
+const settings = {
+  miniature: true,
+  stats: true,
+  cachedShadows: true,
+  culling: true,
+  thinStart: 140,
+  thinAmount: 0.6,
+};
+
+/** With cached shadows on, the shadow map is only redrawn when this is called. */
+function invalidateShadows(): void {
+  renderer.shadowMap.needsUpdate = true;
+}
+foliage.onChange = invalidateShadows;
+
+/** Fit everything that depends on the size of the land: shadows, clouds. */
+const worldCentre = new THREE.Vector3();
+function layoutChanged(): void {
+  const { minX, maxX, minZ, maxZ } = terrain.bounds;
+  worldCentre.set((minX + maxX) / 2, 0, (minZ + maxZ) / 2);
+  const radius = Math.hypot(maxX - minX, maxZ - minZ) / 2;
+  atmosphere.setBounds(worldCentre, radius);
+  clouds.group.position.copy(worldCentre);
+  clouds.group.scale.setScalar(Math.max(1, radius / 85));
+  invalidateShadows();
+}
+terrain.onLayout = layoutChanged;
+layoutChanged();
 
 const keys = new Set<string>();
 const pointer = new THREE.Vector2();
 let pointerOverView = false;
 const raycaster = new THREE.Raycaster();
 const hit = new THREE.Vector3();
+const slot = { tx: 0, tz: 0 }; // the empty space beside the land that the cursor is over
 const projected = new THREE.Vector3();
 
 /** Everything a stroke can change, captured so it can be undone. */
 interface Snapshot {
-  heights: Float32Array;
+  terrain: TerrainSnapshot;
   plants: Plant[];
 }
 
@@ -82,12 +116,12 @@ let flattenTarget = 0;
 const undoStack: Snapshot[] = [];
 const redoStack: Snapshot[] = [];
 
-const takeSnapshot = (): Snapshot => ({ heights: terrain.heights.slice(), plants: foliage.snapshot() });
+const takeSnapshot = (): Snapshot => ({ terrain: terrain.snapshot(), plants: foliage.snapshot() });
 
 function applySnapshot(snapshot: Snapshot): void {
-  terrain.heights.set(snapshot.heights);
-  terrain.rebuild();
+  terrain.restore(snapshot.terrain);
   foliage.restore(snapshot.plants);
+  invalidateShadows();
 }
 
 // ---------------------------------------------------------------- saving
@@ -109,11 +143,13 @@ function loadWorld(data: unknown): boolean {
     if (!terrain.load(file.terrain)) return false;
     foliage.load(file.plants);
     if (typeof file.timeOfDay === 'number') setTime(file.timeOfDay);
+    invalidateShadows();
     return true;
   }
   if (file?.kind === '3jsbildr-terrain') {
     if (!terrain.load(file)) return false;
     foliage.load(null);
+    invalidateShadows();
     return true;
   }
   return false;
@@ -129,7 +165,7 @@ function save(): void {
 
 function saveSettings(): void {
   try {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify({ miniature }));
+    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
   } catch {
     // Not worth interrupting anyone over.
   }
@@ -148,7 +184,8 @@ function restore(): boolean {
 
 function remember(snapshot: Snapshot): void {
   undoStack.push(snapshot);
-  if (undoStack.length > HISTORY_LIMIT) undoStack.shift();
+  const bytes = () => undoStack.reduce((sum, s) => sum + s.terrain.heights.byteLength, 0);
+  while (undoStack.length > 1 && (undoStack.length > HISTORY_LIMIT || bytes() > HISTORY_BYTES)) undoStack.shift();
   redoStack.length = 0;
   refreshHud();
 }
@@ -209,13 +246,40 @@ function setStrength(value: number): void {
 
 function setTime(value: number): void {
   atmosphere.setTime(value);
+  invalidateShadows();
   timeInput.value = String(atmosphere.time);
   $('time-name').textContent = atmosphere.label;
 }
 
 function setMiniature(on: boolean): void {
-  miniature = on;
+  settings.miniature = on;
   $('miniature').classList.toggle('on', on);
+  saveSettings();
+}
+
+function setStats(on: boolean): void {
+  settings.stats = on;
+  $('stats').classList.toggle('on', on);
+  document.body.classList.toggle('stats', on);
+  saveSettings();
+}
+
+/** Push the performance settings into the renderer and the panel's controls. */
+function applyPerformance(): void {
+  settings.thinStart = clamp(settings.thinStart, 20, 400);
+  settings.thinAmount = clamp(settings.thinAmount, 0, 0.95);
+  renderer.shadowMap.autoUpdate = !settings.cachedShadows;
+  invalidateShadows();
+  foliage.options.culling = settings.culling;
+  foliage.options.thinStart = settings.thinStart;
+  foliage.options.thinAmount = settings.thinAmount;
+
+  $<HTMLInputElement>('opt-shadows').checked = settings.cachedShadows;
+  $<HTMLInputElement>('opt-culling').checked = settings.culling;
+  $<HTMLInputElement>('opt-thin-start').value = String(settings.thinStart);
+  $<HTMLInputElement>('opt-thin-amount').value = String(settings.thinAmount);
+  $('opt-thin-start-out').textContent = String(Math.round(settings.thinStart));
+  $('opt-thin-amount-out').textContent = settings.thinAmount ? `${Math.round(settings.thinAmount * 100)}%` : 'off';
   saveSettings();
 }
 
@@ -251,12 +315,31 @@ for (const el of document.querySelectorAll<HTMLElement>('#hud button, #hud input
 $('undo').addEventListener('click', undo);
 $('redo').addEventListener('click', redo);
 $('explore').addEventListener('click', () => setExplore(true));
-$('miniature').addEventListener('click', () => setMiniature(!miniature));
+$('miniature').addEventListener('click', () => setMiniature(!settings.miniature));
+$('stats').addEventListener('click', () => setStats(!settings.stats));
+
+$<HTMLInputElement>('opt-shadows').addEventListener('change', (event) => {
+  settings.cachedShadows = (event.target as HTMLInputElement).checked;
+  applyPerformance();
+});
+$<HTMLInputElement>('opt-culling').addEventListener('change', (event) => {
+  settings.culling = (event.target as HTMLInputElement).checked;
+  applyPerformance();
+});
+$<HTMLInputElement>('opt-thin-start').addEventListener('input', (event) => {
+  settings.thinStart = Number((event.target as HTMLInputElement).value);
+  applyPerformance();
+});
+$<HTMLInputElement>('opt-thin-amount').addEventListener('input', (event) => {
+  settings.thinAmount = Number((event.target as HTMLInputElement).value);
+  applyPerformance();
+});
 
 $('new').addEventListener('click', () => {
   remember(takeSnapshot());
   terrain.generate(Math.floor(Math.random() * 1e9));
   foliage.restore([]);
+  invalidateShadows();
   save();
   refreshHud();
   toast('Fresh land. Undo brings the old one back.');
@@ -298,8 +381,11 @@ fileInput.addEventListener('change', async () => {
 // ---------------------------------------------------------------- start-up
 
 try {
-  const settings = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') as { miniature?: boolean };
-  if (typeof settings.miniature === 'boolean') miniature = settings.miniature;
+  const saved = JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? '{}') as Record<string, unknown>;
+  const target = settings as Record<string, boolean | number>;
+  for (const key of Object.keys(target)) {
+    if (typeof saved[key] === typeof target[key]) target[key] = saved[key] as boolean | number;
+  }
 } catch {
   // Fall back to defaults.
 }
@@ -311,7 +397,9 @@ setTool(brush.tool);
 setPlant(brush.plant);
 setRadius(brush.radius);
 setStrength(brush.strength);
-$('miniature').classList.toggle('on', miniature);
+$('miniature').classList.toggle('on', settings.miniature);
+setStats(settings.stats);
+applyPerformance();
 refreshHud();
 
 // ---------------------------------------------------------------- pointer
@@ -326,6 +414,29 @@ function trackPointer(event: PointerEvent | WheelEvent): void {
 function pick(heights?: Float32Array): boolean {
   raycaster.setFromCamera(pointer, rig.camera);
   return terrain.raycast(raycaster.ray, hit, heights);
+}
+
+/** Is the cursor over an empty space where a tile could be added? Fills `slot` if so. */
+function pickSlot(): boolean {
+  raycaster.setFromCamera(pointer, rig.camera);
+  const { origin, direction } = raycaster.ray;
+  if (direction.y > -1e-4) return false;
+  const t = (WATER_LEVEL - origin.y) / direction.y;
+  if (t <= 0) return false;
+  const [tx, tz] = terrain.tileAt(origin.x + direction.x * t, origin.z + direction.z * t);
+  if (!terrain.canAddTile(tx, tz)) return false;
+  slot.tx = tx;
+  slot.tz = tz;
+  return true;
+}
+
+function addLand(tx: number, tz: number): void {
+  const before = takeSnapshot();
+  if (!terrain.addTile(tx, tz, Math.floor(Math.random() * 1e9))) return;
+  remember(before);
+  save();
+  const count = terrain.tileCount;
+  toast(count >= MAX_TILES ? `New land added. That's the limit of ${MAX_TILES}.` : 'New land added. Undo removes it.');
 }
 
 function setDrag(next: Drag): void {
@@ -350,6 +461,8 @@ canvas.addEventListener('pointerdown', (event) => {
     strokeStart = takeSnapshot();
     strokeChanged = false;
     flattenTarget = hit.y;
+  } else if (primary && !explore && pickSlot()) {
+    addLand(slot.tx, slot.tz);
   }
 });
 
@@ -446,7 +559,10 @@ window.addEventListener('keydown', (event) => {
       save();
       break;
     case 'KeyB':
-      setMiniature(!miniature);
+      setMiniature(!settings.miniature);
+      break;
+    case 'KeyP':
+      setStats(!settings.stats);
       break;
     case 'KeyV':
     case 'Tab':
@@ -470,6 +586,12 @@ window.addEventListener('blur', () => keys.clear());
 
 // ---------------------------------------------------------------- frame loop
 
+const perf = new PerfMeter(renderer, {
+  fps: $('perf-fps'),
+  times: $('perf-times'),
+  detail: $('perf-detail'),
+  graph: $<HTMLCanvasElement>('perf-graph'),
+});
 const altitudeDot = $('altitude-dot');
 const held = (...codes: string[]) => codes.some((code) => keys.has(code));
 const REVERSE: Partial<Record<Tool, Tool>> = { raise: 'lower', lower: 'raise', plant: 'clear', clear: 'plant' };
@@ -478,6 +600,7 @@ let last = performance.now();
 function frame(now: number): void {
   const dt = Math.min((now - last) / 1000, 0.05);
   last = now;
+  perf.begin(now);
 
   const forward = Number(held('KeyW', 'ArrowUp')) - Number(held('KeyS', 'ArrowDown'));
   const right = Number(held('KeyD', 'ArrowRight')) - Number(held('KeyA', 'ArrowLeft'));
@@ -492,11 +615,13 @@ function frame(now: number): void {
   const tool = (shift && REVERSE[brush.tool]) || brush.tool;
   const stroking = drag === 'stroke' && strokeStart !== null;
   const showBrush = !explore && (stroking || (drag === 'none' && pointerOverView));
+  let onLand = false;
   if (showBrush) {
     // While raising or lowering, aim at the surface as it was when the stroke
     // began. Otherwise the hill grows towards the camera and drags the brush with it.
     const aimAtSnapshot = stroking && (tool === 'raise' || tool === 'lower');
-    if (pick(aimAtSnapshot ? strokeStart!.heights : undefined)) {
+    if (pick(aimAtSnapshot ? strokeStart!.terrain.heights : undefined)) {
+      onLand = true;
       if (stroking) {
         if (tool === 'plant') {
           if (foliage.paint(brush.plant, hit.x, hit.z, brush.radius, brush.strength, dt)) strokeChanged = true;
@@ -504,7 +629,8 @@ function frame(now: number): void {
           if (foliage.erase(hit.x, hit.z, brush.radius)) strokeChanged = true;
         } else {
           applyBrush(terrain, tool as BrushKind, hit.x, hit.z, brush.radius, brush.strength, dt, flattenTarget);
-          if (foliage.count) foliage.refresh(); // plants ride the ground as it moves
+          foliage.refresh(hit.x, hit.z, brush.radius); // plants ride the ground as it moves
+          invalidateShadows();
           strokeChanged = true;
         }
         if (strokeChanged) refreshHud();
@@ -519,8 +645,14 @@ function frame(now: number): void {
     cursor.hide();
   }
 
+  // Off the edge of the land, offer the empty space beside it as a place to add more.
+  const offering = showBrush && !stroking && !onLand && pickSlot();
+  if (offering) ghost.show(slot.tx, slot.tz, now / 1000);
+  else ghost.hide();
+  document.body.classList.toggle('offering', offering);
+
   atmosphere.update(rig.camera, rig.zoom);
-  foliage.update(dt);
+  foliage.update(dt, rig.camera);
   clouds.group.rotation.y += dt * 0.012;
   altitudeDot.style.top = `${rig.zoom * 100}%`;
 
@@ -528,7 +660,10 @@ function frame(now: number): void {
   // The sharp band sits wherever the camera's pivot lands on screen.
   projected.copy(rig.pivot).project(rig.camera);
   const focus = clamp((projected.y + 1) / 2, 0.25, 0.75);
-  post.render(miniature ? (1 - rig.zoom) ** 1.5 : 0, focus);
+  perf.gpuBegin();
+  post.render(settings.miniature ? (1 - rig.zoom) ** 1.5 : 0, focus);
+  perf.gpuEnd();
+  perf.end(settings.stats, foliage.drawn, foliage.count);
 
   requestAnimationFrame(frame);
 }
@@ -536,4 +671,4 @@ function frame(now: number): void {
 requestAnimationFrame(frame);
 
 // Handy from the browser console: bildr.rig.goTo({ zoom: 1, x: 10, z: -5 })
-Object.assign(window, { bildr: { rig, terrain, foliage, atmosphere, brush, scene, renderer, setTime } });
+Object.assign(window, { bildr: { rig, terrain, foliage, atmosphere, brush, settings, scene, renderer, setTime } });

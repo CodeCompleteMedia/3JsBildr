@@ -1,12 +1,12 @@
 import * as THREE from 'three';
-import { HALF, Terrain, WATER_LEVEL } from './terrain';
+import { TILE_SIZE, Terrain, WATER_LEVEL } from './terrain';
 
 const DEG = Math.PI / 180;
 const clamp = (v: number, lo: number, hi: number) => (v < lo ? lo : v > hi ? hi : v);
 const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
 
 // Tuning. `zoom` runs from 0 (whole diorama on the table) to 1 (standing on the ground).
-const MAX_DISTANCE = 370;
+const TABLE_DISTANCE = 370; // how far back the table view sits for a single tile
 const TABLE_PITCH = 54 * DEG; // how steeply the table view looks down
 const TABLE_FOV = 28; // long lens up high: flattens perspective, reads as a miniature
 const GROUND_FOV = 62; // wide lens on the ground: things tower over you
@@ -15,7 +15,6 @@ const CLEARANCE = 0.6; // keep the camera at least this far above land and water
 const MAX_PITCH = 86 * DEG;
 const STANDOFF = 9; // when zooming in on a spot, land this far short of it, facing it
 
-const distanceAt = (zoom: number) => MAX_DISTANCE * (1 - zoom) ** 2;
 const pitchAt = (zoom: number) => TABLE_PITCH * (1 - zoom) ** 0.85;
 const fovAt = (zoom: number) => lerp(TABLE_FOV, GROUND_FOV, zoom ** 2.5);
 // Lowest allowed pitch. Negative means looking up, which only opens up near the ground.
@@ -48,12 +47,30 @@ export class DioramaCamera {
   /** The point on the ground the camera is centred on. */
   readonly pivot = new THREE.Vector3();
 
+  private readonly scratch = new THREE.Vector2();
   private readonly dir = new THREE.Vector3();
   private readonly look = new THREE.Vector3();
+  /** Distance of the table view. Grows with the land so the whole world still fits. */
+  private reach = TABLE_DISTANCE;
 
   constructor(private readonly terrain: Terrain, aspect: number) {
-    this.camera = new THREE.PerspectiveCamera(TABLE_FOV, aspect, 0.1, 4000);
+    this.camera = new THREE.PerspectiveCamera(TABLE_FOV, aspect, 0.1, 9000);
     this.update(1);
+  }
+
+  private distanceAt(zoom: number): number {
+    return this.reach * (1 - zoom) ** 2;
+  }
+
+  /** How far back the table view needs to be to take in all the land. */
+  private get targetReach(): number {
+    const { minX, maxX, minZ, maxZ } = this.terrain.bounds;
+    return (TABLE_DISTANCE * Math.hypot(maxX - minX, maxZ - minZ)) / Math.hypot(TILE_SIZE, TILE_SIZE);
+  }
+
+  private centre(target: THREE.Vector2): THREE.Vector2 {
+    const { minX, maxX, minZ, maxZ } = this.terrain.bounds;
+    return target.set((minX + maxX) / 2, (minZ + maxZ) / 2);
   }
 
   /** 0 at the table view, 1 on the ground. */
@@ -63,7 +80,7 @@ export class DioramaCamera {
 
   /** Distance from the camera to its pivot. */
   get distance(): number {
-    return distanceAt(this.zoomNow);
+    return this.distanceAt(this.zoomNow);
   }
 
   /**
@@ -74,8 +91,8 @@ export class DioramaCamera {
     const from = this.goalZoom;
     const to = clamp(from + amount, 0, 1);
     if (to === from) return;
-    const d0 = distanceAt(from);
-    const d1 = distanceAt(to);
+    const d0 = this.distanceAt(from);
+    const d1 = this.distanceAt(to);
     if (anchor && to > from && d0 > 0.05) {
       const k = 1 - d1 / d0;
       // Aim a little short of the anchor near the ground, so you arrive looking
@@ -131,7 +148,7 @@ export class DioramaCamera {
     this.goalZoom = 0;
     this.goalYaw = 35 * DEG;
     this.goalTilt = 0;
-    this.goalFocus.set(0, 0);
+    this.centre(this.goalFocus);
   }
 
   /** Send the camera somewhere specific (used by scripts and, later, project sites). */
@@ -152,8 +169,10 @@ export class DioramaCamera {
   update(dt: number): void {
     const ease = 1 - Math.exp(-dt * 12);
 
-    // Fully zoomed out always settles on the centre of the diorama.
-    if (this.goalZoom < 0.02) this.goalFocus.multiplyScalar(Math.exp(-dt * 4));
+    // Fully zoomed out always settles on the centre of the land.
+    if (this.goalZoom < 0.02) this.goalFocus.lerp(this.centre(this.scratch), 1 - Math.exp(-dt * 4));
+    // When land is added the table view pulls back smoothly to take it in.
+    this.reach = lerp(this.reach, this.targetReach, 1 - Math.exp(-dt * 5));
 
     this.zoomNow = lerp(this.zoomNow, this.goalZoom, ease);
     this.yawNow = lerp(this.yawNow, this.goalYaw, ease);
@@ -161,7 +180,7 @@ export class DioramaCamera {
     this.focusNow.lerp(this.goalFocus, ease);
 
     const zoom = this.zoomNow;
-    const distance = distanceAt(zoom);
+    const distance = this.distanceAt(zoom);
     const pitch = clamp(pitchAt(zoom) + this.tiltNow, minPitchAt(zoom), MAX_PITCH);
     const cosP = Math.cos(pitch);
     this.dir.set(-Math.sin(this.yawNow) * cosP, -Math.sin(pitch), -Math.cos(this.yawNow) * cosP);
@@ -187,7 +206,7 @@ export class DioramaCamera {
 
     // Push the near plane out with distance to keep depth precise from far away.
     this.camera.fov = fovAt(zoom);
-    this.camera.near = clamp(distance * 0.05, 0.4, 20);
+    this.camera.near = clamp(distance * 0.05, 0.4, 40);
     this.camera.updateProjectionMatrix();
   }
 
@@ -201,8 +220,8 @@ export class DioramaCamera {
   }
 
   private clampFocus(): void {
-    const limit = HALF - 1;
-    this.goalFocus.x = clamp(this.goalFocus.x, -limit, limit);
-    this.goalFocus.y = clamp(this.goalFocus.y, -limit, limit);
+    const { minX, maxX, minZ, maxZ } = this.terrain.bounds;
+    this.goalFocus.x = clamp(this.goalFocus.x, minX + 1, maxX - 1);
+    this.goalFocus.y = clamp(this.goalFocus.y, minZ + 1, maxZ - 1);
   }
 }

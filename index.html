@@ -12,6 +12,20 @@
     <div id="hud">
       <div class="tag">3JsBildr <span id="plant-count"></span></div>
 
+      <div id="perf">
+        <div class="perf-head"><b id="perf-fps">–</b><span>fps</span><span id="perf-times"></span></div>
+        <canvas id="perf-graph" width="276" height="34"></canvas>
+        <div id="perf-detail"></div>
+        <label class="check" title="Redraw shadows only when the sun, land or plants change"><input id="opt-shadows" type="checkbox" /> Cached shadows</label>
+        <label class="check" title="Skip regions of plants the camera can't see"><input id="opt-culling" type="checkbox" /> Region culling</label>
+        <label class="dial" title="Distance at which ferns and horsetails begin to thin out. Full thinning at twice this.">
+          <span>Thinning from</span><input id="opt-thin-start" type="range" min="20" max="400" step="5" /><output id="opt-thin-start-out"></output>
+        </label>
+        <label class="dial" title="Share of ferns and horsetails removed far from the camera">
+          <span>Thinning amount</span><input id="opt-thin-amount" type="range" min="0" max="0.95" step="0.05" /><output id="opt-thin-amount-out"></output>
+        </label>
+      </div>
+
       <nav id="rail" aria-label="Brushes">
         <button data-tool="raise" title="Raise (1)"><i>▲</i><span>Raise</span><kbd>1</kbd></button>
         <button data-tool="lower" title="Lower (2)"><i>▼</i><span>Lower</span><kbd>2</kbd></button>
@@ -53,6 +67,7 @@
         <button id="export" title="Download the terrain as JSON">Export</button>
         <button id="import" title="Load a terrain JSON file">Import</button>
         <span class="gap"></span>
+        <button id="stats" title="Frame-time readout and performance settings (P)">Stats <kbd>P</kbd></button>
         <button id="miniature" title="Miniature blur when viewed from above (B)">Miniature <kbd>B</kbd></button>
         <button id="explore" title="Hide the tools and explore like a visitor (V)">Explore <kbd>V</kbd></button>
       </div>
@@ -71,9 +86,9 @@
       </div>
 
       <div id="hint">
-        <b>Drag</b> sculpt or plant <em>·</em> <b>Shift</b> reverse <em>·</em> <b>Scroll</b> zoom to cursor <em>·</em>
+        <b>Drag</b> sculpt or plant <em>·</em> <b>Shift</b> reverse <em>·</em> <b>Click beside the land</b> add more <em>·</em> <b>Scroll</b> zoom to cursor <em>·</em>
         <b>Right-drag</b> or <b>Alt-drag</b> orbit <em>·</em> <b>Space-drag</b> pan <em>·</em>
-        <b>WASD</b> move <em>·</em> <b>Q E</b> turn <em>·</em> <b>, .</b> time <em>·</em> <b>0</b> reset view <em>·</em> <b>H</b> hide this
+        <b>WASD</b> move <em>·</em> <b>, .</b> time <em>·</em> <b>0</b> reset view <em>·</em> <b>H</b> hide this
       </div>
 
       <div id="explore-hint"><b>Drag</b> look <em>·</em> <b>Scroll</b> zoom <em>·</em> <b>WASD</b> move <em>·</em> <b>V</b> back to tools</div>

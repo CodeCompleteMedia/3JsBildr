@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { palette } from './palette';
-import { HALF, Terrain, WORLD_SIZE } from './terrain';
+import { HALF, Terrain, TILE_SIZE } from './terrain';
 
 export const PLANT_KINDS = ['conifer', 'treefern', 'cycad', 'fern', 'horsetail', 'rock'] as const;
 export type PlantKind = (typeof PLANT_KINDS)[number];
@@ -33,6 +33,7 @@ interface Species {
   layer: Layer;
   /** Personal space. Two plants in the same layer keep the sum of theirs apart. */
   space: number;
+  /** Most plants of this species per tile of land. */
   capacity: number;
   scale: [number, number];
   sway: number;
@@ -42,8 +43,17 @@ interface Species {
   build(): THREE.BufferGeometry;
 }
 
-const GRID = 2; // spatial hash cell size
-const GRID_SPAN = Math.ceil(WORLD_SIZE / GRID) + 1;
+const GRID = 2; // spatial hash cell size, for spacing checks
+const KEY_SPAN = 4096; // packs signed cell coordinates into one map key
+
+// The land is divided into squares, six across each tile. Each square draws its
+// own plants, so squares outside the camera's view can be skipped whole.
+const REGION_SIZE = TILE_SIZE / 6;
+
+// Thinning ranks run 0..RANK_MAX; a plant shrinks away over RANK_FADE as the
+// kept fraction drops past its rank. The shader below uses the same numbers.
+const RANK_MAX = 0.92;
+const RANK_FADE = 0.08;
 
 const smoothstep = (a: number, b: number, x: number) => {
   const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
@@ -216,22 +226,75 @@ function forestMix(height: number): [PlantKind, number][] {
 
 // ------------------------------------------------------------ foliage
 
+export interface FoliageOptions {
+  /** Skip regions the camera can't see. */
+  culling: boolean;
+  /** Distance at which ground cover starts to thin. It reaches full thinning at twice this. */
+  thinStart: number;
+  /** Fraction of ground cover removed at full thinning, 0..1. */
+  thinAmount: number;
+}
+
+/** One species within one region: a single instanced draw. */
+interface Batch {
+  mesh: THREE.InstancedMesh;
+  ranks: Float32Array; // per instance, ascending for ground cover
+  capacity: number;
+  total: number;
+  ground: boolean;
+}
+
+interface Region {
+  plants: Plant[];
+  batches: (Batch | undefined)[];
+  dirty: boolean;
+  x0: number;
+  z0: number;
+  minY: number;
+  maxY: number;
+}
+
+const rankOf = (plant: Plant) => hash(plant.x * 12.9898 + plant.z * 78.233 + 7) * RANK_MAX;
+
+/** Count of leading entries in an ascending array that are below `limit`. */
+function countBelow(sorted: Float32Array, length: number, limit: number): number {
+  let lo = 0;
+  let hi = length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (sorted[mid] < limit) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
 /**
- * Every plant in the world. Each species is one instanced mesh, so thousands
- * of plants cost a handful of draw calls.
+ * Every plant in the world. Plants are drawn as instanced batches, one per
+ * species per region, so thousands of plants cost a few dozen draw calls and
+ * whole regions can be culled.
  */
 export class Foliage {
   readonly group = new THREE.Group();
+  readonly options: FoliageOptions = { culling: true, thinStart: 140, thinAmount: 0.6 };
+  /** Called whenever what is drawn has changed (for example, to refresh cached shadows). */
+  onChange?: () => void;
+  /** Plants submitted for drawing in the last frame, after culling and thinning. */
+  drawn = 0;
 
   private plants: Plant[] = [];
   private readonly grid = new Map<number, Plant[]>();
-  private readonly meshes: THREE.InstancedMesh[] = [];
-  private readonly counts: number[] = [];
+  private readonly counts = PLANT_KINDS.map(() => 0);
+  private readonly regions = new Map<number, Region>();
+  private readonly geometries: THREE.BufferGeometry[] = [];
+  private readonly materials: THREE.MeshStandardMaterial[] = [];
   private readonly time = { value: 0 };
+  private readonly thinStart = { value: 140 };
+  private readonly thinAmount = { value: 0.6 };
+  private readonly frustum = new THREE.Frustum();
+  private readonly viewProjection = new THREE.Matrix4();
   private carry = 0;
 
   constructor(private readonly terrain: Terrain) {
-    const white = new THREE.Color(1, 1, 1);
     for (const kind of PLANT_KINDS) {
       const species = SPECIES[kind];
       const material = new THREE.MeshStandardMaterial({
@@ -241,33 +304,44 @@ export class Foliage {
         metalness: 0,
         side: THREE.DoubleSide,
       });
-      // A little wind: bend each plant more the higher up the vertex is.
       const sway = { value: species.sway };
+      const thinAmount = species.layer === Layer.Ground ? this.thinAmount : { value: 0 };
       material.onBeforeCompile = (shader) => {
         shader.uniforms.uTime = this.time;
         shader.uniforms.uSway = sway;
+        shader.uniforms.uThinStart = this.thinStart;
+        shader.uniforms.uThinAmount = thinAmount;
         shader.vertexShader = shader.vertexShader
-          .replace('#include <common>', '#include <common>\nuniform float uTime;\nuniform float uSway;')
+          .replace(
+            '#include <common>',
+            /* glsl */ `#include <common>
+            uniform float uTime;
+            uniform float uSway;
+            uniform float uThinStart;
+            uniform float uThinAmount;
+            #ifdef USE_INSTANCING
+              attribute float aRank;
+            #endif`,
+          )
           .replace(
             '#include <begin_vertex>',
             /* glsl */ `#include <begin_vertex>
             #ifdef USE_INSTANCING
-              float swayPhase = instanceMatrix[3].x * 0.35 + instanceMatrix[3].z * 0.27;
+              vec3 plantOrigin = instanceMatrix[3].xyz;
+              // A little wind: bend each plant more the higher up the vertex is.
+              float swayPhase = plantOrigin.x * 0.35 + plantOrigin.z * 0.27;
               float swayBend = uSway * transformed.y * transformed.y;
               transformed.x += sin(uTime * 1.3 + swayPhase) * swayBend;
               transformed.z += cos(uTime * 1.05 + swayPhase * 1.3) * swayBend * 0.7;
+              // Distance thinning: far from the camera only the lowest-ranked plants
+              // remain, and each one shrinks into the ground instead of popping.
+              float thinKeep = 1.0 - uThinAmount * smoothstep(uThinStart, uThinStart * 2.0, distance(cameraPosition, plantOrigin));
+              transformed *= clamp((thinKeep - aRank) / ${RANK_FADE.toFixed(2)}, 0.0, 1.0);
             #endif`,
           );
       };
-      const mesh = new THREE.InstancedMesh(species.build(), material, species.capacity);
-      mesh.setColorAt(0, white);
-      mesh.count = 0;
-      mesh.castShadow = species.castShadow;
-      mesh.receiveShadow = true;
-      mesh.frustumCulled = false;
-      this.meshes.push(mesh);
-      this.counts.push(0);
-      this.group.add(mesh);
+      this.materials.push(material);
+      this.geometries.push(species.build());
     }
   }
 
@@ -292,25 +366,22 @@ export class Foliage {
       if (Math.random() < u * u * 0.7) continue; // thin out towards the rim
       const px = x + Math.cos(angle) * radius * u;
       const pz = z + Math.sin(angle) * radius * u;
-      if (Math.abs(px) > HALF - 0.6 || Math.abs(pz) > HALF - 0.6) continue;
+      if (!this.terrain.contains(px, pz, 0.6)) continue;
 
       const height = this.terrain.heightAt(px, pz);
       const kind = choice === 'forest' ? pickWeighted(forestMix(height)) : choice;
       const k = PLANT_KINDS.indexOf(kind);
       const species = SPECIES[kind];
-      if (this.counts[k] >= species.capacity) continue;
+      if (this.counts[k] >= species.capacity * this.terrain.tileCount) continue;
       if (Math.random() >= species.fits(height, this.terrain.levelAt(px, pz))) continue;
       if (this.crowded(k, px, pz)) continue;
 
       const [lo, hi] = species.scale;
-      const plant: Plant = { k, x: px, z: pz, s: lo + Math.random() * (hi - lo), r: Math.random() * Math.PI * 2 };
-      this.plants.push(plant);
-      this.counts[k]++;
-      this.cell(px, pz, true)!.push(plant);
+      this.add({ k, x: px, z: pz, s: lo + Math.random() * (hi - lo), r: Math.random() * Math.PI * 2 });
       changed = true;
     }
 
-    if (changed) this.refresh();
+    if (changed) this.flush();
     return changed;
   }
 
@@ -329,54 +400,65 @@ export class Foliage {
   }
 
   restore(plants: Plant[]): void {
-    this.plants = plants.slice();
+    this.plants = [];
     this.grid.clear();
     this.counts.fill(0);
-    for (const plant of this.plants) {
-      this.cell(plant.x, plant.z, true)!.push(plant);
-      this.counts[plant.k]++;
+    for (const region of this.regions.values()) {
+      region.plants = [];
+      region.dirty = true;
     }
-    this.refresh();
+    for (const plant of plants) this.add(plant);
+    this.flush();
   }
 
-  /** Re-seat every plant on the ground. Call after the terrain changes. */
-  refresh(): void {
-    const matrix = new THREE.Matrix4();
-    const position = new THREE.Vector3();
-    const rotation = new THREE.Quaternion();
-    const scale = new THREE.Vector3();
-    const up = new THREE.Vector3(0, 1, 0);
-    const color = new THREE.Color();
-    const next = this.meshes.map(() => 0);
-    const rock = PLANT_KINDS.indexOf('rock');
-
-    for (const plant of this.plants) {
-      const mesh = this.meshes[plant.k];
-      const i = next[plant.k]++;
-      if (i >= mesh.instanceMatrix.count) continue;
-      const seed = plant.x * 12.9898 + plant.z * 78.233;
-      position.set(plant.x, this.terrain.heightAt(plant.x, plant.z) - 0.05 * plant.s, plant.z);
-      rotation.setFromAxisAngle(up, plant.r);
-      if (plant.k === rock) {
-        scale.set(plant.s * (0.75 + hash(seed) * 0.6), plant.s * (0.7 + hash(seed + 1) * 0.6), plant.s * (0.75 + hash(seed + 2) * 0.6));
-      } else {
-        scale.setScalar(plant.s);
+  /**
+   * Re-seat plants on the ground after the terrain changes. Pass the brush
+   * centre and radius to redo only the regions it touched.
+   */
+  refresh(x?: number, z?: number, radius?: number): void {
+    for (const region of this.regions.values()) {
+      if (!region.plants.length) continue;
+      if (x !== undefined && z !== undefined && radius !== undefined) {
+        const outside =
+          x + radius < region.x0 || x - radius > region.x0 + REGION_SIZE ||
+          z + radius < region.z0 || z - radius > region.z0 + REGION_SIZE;
+        if (outside) continue;
       }
-      mesh.setMatrixAt(i, matrix.compose(position, rotation, scale));
-      // Slight per-plant tint so a stand of one species isn't a flat colour.
-      mesh.setColorAt(i, color.setRGB(0.86 + hash(seed + 3) * 0.28, 0.9 + hash(seed + 4) * 0.2, 0.84 + hash(seed + 5) * 0.32));
+      region.dirty = true;
     }
-
-    this.meshes.forEach((mesh, k) => {
-      mesh.count = Math.min(next[k], mesh.instanceMatrix.count);
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    });
+    this.flush();
   }
 
-  /** Advance the wind. */
-  update(dt: number): void {
+  /** Advance the wind, and decide what to draw this frame. */
+  update(dt: number, camera: THREE.Camera): void {
     this.time.value += dt;
+    this.thinStart.value = this.options.thinStart;
+    this.thinAmount.value = this.options.thinAmount;
+
+    const { culling, thinStart, thinAmount } = this.options;
+    this.frustum.setFromProjectionMatrix(
+      this.viewProjection.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse),
+    );
+    const eye = camera.position;
+    let drawn = 0;
+
+    for (const region of this.regions.values()) {
+      if (!region.plants.length) continue;
+      // Thin by the distance to the nearest point of the region, so the cut is
+      // never ahead of what the shader has already shrunk to nothing.
+      const dx = Math.max(region.x0 - eye.x, 0, eye.x - (region.x0 + REGION_SIZE));
+      const dy = Math.max(region.minY - eye.y, 0, eye.y - (region.maxY + 3));
+      const dz = Math.max(region.z0 - eye.z, 0, eye.z - (region.z0 + REGION_SIZE));
+      const keep = 1 - thinAmount * smoothstep(thinStart, thinStart * 2, Math.hypot(dx, dy, dz));
+
+      for (const batch of region.batches) {
+        if (!batch || !batch.total) continue;
+        batch.mesh.frustumCulled = culling;
+        batch.mesh.count = batch.ground && keep < 1 ? countBelow(batch.ranks, batch.total, keep) : batch.total;
+        if (!culling || this.frustum.intersectsSphere(batch.mesh.boundingSphere!)) drawn += batch.mesh.count;
+      }
+    }
+    this.drawn = drawn;
   }
 
   serialize(): FoliageFile {
@@ -396,15 +478,157 @@ export class Foliage {
         const [kind, x, z, s, r] = saved.data.slice(i, i + 5).map(Number);
         const k = remap[kind];
         if (k === undefined || k < 0 || ![x, z, s, r].every(Number.isFinite)) continue;
-        if (Math.abs(x) > HALF || Math.abs(z) > HALF) continue;
+        if (!this.terrain.contains(x, z)) continue;
         plants.push({ k, x, z, s, r });
       }
     }
     this.restore(plants);
   }
 
+  private add(plant: Plant): void {
+    this.plants.push(plant);
+    this.counts[plant.k]++;
+    this.cell(plant.x, plant.z, true)!.push(plant);
+    const region = this.regionAt(plant.x, plant.z);
+    region.plants.push(plant);
+    region.dirty = true;
+  }
+
+  private regionAt(x: number, z: number): Region {
+    const rx = Math.floor((x + HALF) / REGION_SIZE);
+    const rz = Math.floor((z + HALF) / REGION_SIZE);
+    const key = (rz + KEY_SPAN / 2) * KEY_SPAN + rx + KEY_SPAN / 2;
+    let region = this.regions.get(key);
+    if (!region) {
+      region = {
+        plants: [],
+        batches: [],
+        dirty: false,
+        x0: rx * REGION_SIZE - HALF,
+        z0: rz * REGION_SIZE - HALF,
+        minY: 0,
+        maxY: 0,
+      };
+      this.regions.set(key, region);
+    }
+    return region;
+  }
+
+  /** Rebuild the batches of every region marked dirty. */
+  private flush(): void {
+    let changed = false;
+    for (const region of this.regions.values()) {
+      if (!region.dirty) continue;
+      this.rebuild(region);
+      changed = true;
+    }
+    if (changed) this.onChange?.();
+  }
+
+  private rebuild(region: Region): void {
+    region.dirty = false;
+    const byKind: Plant[][] = PLANT_KINDS.map(() => []);
+    for (const plant of region.plants) byKind[plant.k].push(plant);
+
+    const matrix = new THREE.Matrix4();
+    const position = new THREE.Vector3();
+    const rotation = new THREE.Quaternion();
+    const scale = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    const color = new THREE.Color();
+    const rock = PLANT_KINDS.indexOf('rock');
+    let minY = Infinity;
+    let maxY = -Infinity;
+
+    byKind.forEach((list, k) => {
+      let batch = region.batches[k];
+      if (!list.length) {
+        if (batch) {
+          batch.total = 0;
+          batch.mesh.count = 0;
+          batch.mesh.visible = false;
+        }
+        return;
+      }
+      if (!batch || batch.capacity < list.length) {
+        if (batch) this.discard(batch);
+        batch = this.createBatch(k, list.length);
+        region.batches[k] = batch;
+      }
+      // Ground cover is stored in rank order, so thinning is just drawing fewer.
+      if (batch.ground) list.sort((a, b) => rankOf(a) - rankOf(b));
+
+      const { mesh, ranks } = batch;
+      list.forEach((plant, i) => {
+        const seed = plant.x * 12.9898 + plant.z * 78.233;
+        const y = this.terrain.heightAt(plant.x, plant.z) - 0.05 * plant.s;
+        minY = Math.min(minY, y);
+        maxY = Math.max(maxY, y);
+        position.set(plant.x, y, plant.z);
+        rotation.setFromAxisAngle(up, plant.r);
+        if (k === rock) {
+          scale.set(plant.s * (0.75 + hash(seed) * 0.6), plant.s * (0.7 + hash(seed + 1) * 0.6), plant.s * (0.75 + hash(seed + 2) * 0.6));
+        } else {
+          scale.setScalar(plant.s);
+        }
+        mesh.setMatrixAt(i, matrix.compose(position, rotation, scale));
+        // Slight per-plant tint so a stand of one species isn't a flat colour.
+        mesh.setColorAt(i, color.setRGB(0.86 + hash(seed + 3) * 0.28, 0.9 + hash(seed + 4) * 0.2, 0.84 + hash(seed + 5) * 0.32));
+        ranks[i] = batch!.ground ? rankOf(plant) : 0;
+      });
+
+      batch.total = list.length;
+      mesh.count = list.length;
+      mesh.visible = true;
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.instanceColor!.needsUpdate = true;
+      mesh.geometry.attributes.aRank.needsUpdate = true;
+    });
+
+    if (minY > maxY) return;
+    region.minY = minY;
+    region.maxY = maxY;
+    // One sphere per region, tall enough for the biggest trees, used for culling.
+    const sphere = new THREE.Sphere(
+      new THREE.Vector3(region.x0 + REGION_SIZE / 2, (minY + maxY) / 2 + 6, region.z0 + REGION_SIZE / 2),
+      Math.hypot(REGION_SIZE * 0.7072 + 4, (maxY - minY) / 2 + 9),
+    );
+    for (const batch of region.batches) if (batch) batch.mesh.boundingSphere = sphere;
+  }
+
+  private createBatch(k: number, needed: number): Batch {
+    const species = SPECIES[PLANT_KINDS[k]];
+    let capacity = 32;
+    while (capacity < needed) capacity *= 2;
+    // Shares the species' model data; only the per-instance rank is its own.
+    const base = this.geometries[k];
+    const geometry = new THREE.BufferGeometry();
+    for (const name of ['position', 'normal', 'color']) geometry.setAttribute(name, base.attributes[name]);
+    const ranks = new Float32Array(capacity);
+    const rankAttribute = new THREE.InstancedBufferAttribute(ranks, 1);
+    rankAttribute.setUsage(THREE.DynamicDrawUsage);
+    geometry.setAttribute('aRank', rankAttribute);
+
+    const mesh = new THREE.InstancedMesh(geometry, this.materials[k], capacity);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.setColorAt(0, new THREE.Color(1, 1, 1));
+    mesh.castShadow = species.castShadow;
+    mesh.receiveShadow = true;
+    this.group.add(mesh);
+    return { mesh, ranks, capacity, total: 0, ground: species.layer === Layer.Ground };
+  }
+
+  private discard(batch: Batch): void {
+    this.group.remove(batch.mesh);
+    batch.mesh.geometry.deleteAttribute('position');
+    batch.mesh.geometry.deleteAttribute('normal');
+    batch.mesh.geometry.deleteAttribute('color');
+    batch.mesh.geometry.dispose(); // frees only the rank buffer; the model data is shared
+    batch.mesh.dispose();
+  }
+
   private cell(x: number, z: number, create: boolean): Plant[] | undefined {
-    const key = Math.floor((z + HALF) / GRID) * GRID_SPAN + Math.floor((x + HALF) / GRID);
+    const key = (Math.floor(z / GRID) + KEY_SPAN / 2) * KEY_SPAN + Math.floor(x / GRID) + KEY_SPAN / 2;
     let list = this.grid.get(key);
     if (!list && create) {
       list = [];

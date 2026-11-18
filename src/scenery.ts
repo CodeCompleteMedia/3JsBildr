@@ -1,25 +1,5 @@
 import * as THREE from 'three';
 import { palette } from './palette';
-import { BASE_Y, WATER_LEVEL, WORLD_SIZE } from './terrain';
-
-/** A block of water filling the slab up to the water line. */
-export function createWater(): THREE.Mesh {
-  const depth = WATER_LEVEL - BASE_Y - 0.05;
-  const water = new THREE.Mesh(
-    new THREE.BoxGeometry(WORLD_SIZE - 0.3, depth, WORLD_SIZE - 0.3),
-    new THREE.MeshStandardMaterial({
-      color: palette.water,
-      transparent: true,
-      opacity: 0.86,
-      roughness: 0.3,
-      metalness: 0,
-      depthWrite: false,
-    }),
-  );
-  water.position.y = WATER_LEVEL - depth / 2;
-  water.receiveShadow = true;
-  return water;
-}
 
 /** Chunky clouds drifting in a ring around the diorama. `material` is shared so the sky can tint it. */
 export function createClouds(count = 11): { group: THREE.Group; material: THREE.MeshStandardMaterial } {

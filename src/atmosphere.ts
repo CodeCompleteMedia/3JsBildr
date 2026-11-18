@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { WORLD_SIZE } from './terrain';
 
 const DEG = Math.PI / 180;
 
@@ -102,6 +101,8 @@ export class Atmosphere {
     uSunDir: { value: new THREE.Vector3(0, 1, 0) },
     uSunColor: { value: new THREE.Color() },
   };
+  private readonly centre = new THREE.Vector3();
+  private radius = 100;
   private readonly a = new THREE.Color();
   private readonly b = new THREE.Color();
 
@@ -124,19 +125,27 @@ export class Atmosphere {
     this.sun = new THREE.DirectionalLight(0xffffff, 1);
     this.sun.castShadow = true;
     this.sun.shadow.mapSize.set(4096, 4096);
-    const reach = WORLD_SIZE * 0.82;
+    this.sun.shadow.bias = -0.0012;
+    this.sun.shadow.normalBias = 0.6;
+    this.sun.shadow.radius = 1.2;
+    this.lights.add(this.fill, this.sun, this.sun.target);
+
+    this.setTime(this.time);
+  }
+
+  /** Tell the sun how much land there is, so its shadows cover all of it. */
+  setBounds(centre: THREE.Vector3, radius: number): void {
+    this.centre.copy(centre);
+    this.radius = radius;
+    const reach = radius + 12;
     const shadowCamera = this.sun.shadow.camera;
     shadowCamera.left = -reach;
     shadowCamera.right = reach;
     shadowCamera.top = reach;
     shadowCamera.bottom = -reach;
     shadowCamera.near = 20;
-    shadowCamera.far = 460;
-    this.sun.shadow.bias = -0.0012;
-    this.sun.shadow.normalBias = 0.6;
-    this.sun.shadow.radius = 1.2;
-    this.lights.add(this.fill, this.sun, this.sun.target);
-
+    shadowCamera.far = reach * 2 + 360;
+    shadowCamera.updateProjectionMatrix();
     this.setTime(this.time);
   }
 
@@ -173,7 +182,8 @@ export class Atmosphere {
 
     this.sun.color.copy(u.uSunColor.value);
     this.sun.intensity = num(from.sunPower, to.sunPower);
-    this.sun.position.copy(u.uSunDir.value).multiplyScalar(260);
+    this.sun.target.position.copy(this.centre);
+    this.sun.position.copy(u.uSunDir.value).multiplyScalar(this.radius + 180).add(this.centre);
     mix(this.fill.color, from.fillSky, to.fillSky);
     mix(this.fill.groundColor, from.fillGround, to.fillGround);
     this.fill.intensity = num(from.fillPower, to.fillPower);

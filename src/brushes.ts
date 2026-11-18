@@ -1,4 +1,4 @@
-import { CELL, HALF, MAX_HEIGHT, MIN_HEIGHT, RES, Terrain, VERTS } from './terrain';
+import { CELL, MAX_HEIGHT, MIN_HEIGHT, Terrain } from './terrain';
 
 export type BrushKind = 'raise' | 'lower' | 'smooth' | 'flatten';
 
@@ -16,6 +16,7 @@ export const BRUSH_LIMITS = {
  * Apply one frame of a brush centred on (x, z).
  * `strength` is world units per second at the centre for raise/lower, and a
  * rate for smooth/flatten. `target` is the height flatten pulls towards.
+ * Works across tile seams; vertices that belong to no tile are left alone.
  */
 export function applyBrush(
   terrain: Terrain,
@@ -27,10 +28,15 @@ export function applyBrush(
   dt: number,
   target: number,
 ): void {
-  const i0 = Math.max(0, Math.ceil((x - radius + HALF) / CELL));
-  const i1 = Math.min(RES, Math.floor((x + radius + HALF) / CELL));
-  const j0 = Math.max(0, Math.ceil((z - radius + HALF) / CELL));
-  const j1 = Math.min(RES, Math.floor((z + radius + HALF) / CELL));
+  const ox = terrain.originX;
+  const oz = terrain.originZ;
+  const stride = terrain.vertsX;
+  const lastI = stride - 1;
+  const lastJ = terrain.vertsZ - 1;
+  const i0 = Math.max(0, Math.ceil((x - radius - ox) / CELL));
+  const i1 = Math.min(lastI, Math.floor((x + radius - ox) / CELL));
+  const j0 = Math.max(0, Math.ceil((z - radius - oz) / CELL));
+  const j1 = Math.min(lastJ, Math.floor((z + radius - oz) / CELL));
   if (i0 > i1 || j0 > j1) return;
 
   const h = terrain.heights;
@@ -39,14 +45,14 @@ export function applyBrush(
   const r2 = radius * radius;
 
   for (let j = j0; j <= j1; j++) {
-    const dz = -HALF + j * CELL - z;
+    const dz = oz + j * CELL - z;
     for (let i = i0; i <= i1; i++) {
-      const dx = -HALF + i * CELL - x;
+      const dx = ox + i * CELL - x;
       const d2 = dx * dx + dz * dz;
-      if (d2 >= r2) continue;
+      if (d2 >= r2 || !terrain.vertexActive(i, j)) continue;
       const q = 1 - d2 / r2;
       const falloff = q * q; // soft bell: full at the centre, zero at the rim
-      const idx = j * VERTS + i;
+      const idx = j * stride + i;
       let v = h[idx];
 
       switch (kind) {
@@ -59,9 +65,10 @@ export function applyBrush(
         case 'smooth': {
           let sum = 0;
           let n = 0;
-          for (let b = Math.max(0, j - 1); b <= Math.min(RES, j + 1); b++) {
-            for (let a = Math.max(0, i - 1); a <= Math.min(RES, i + 1); a++) {
-              sum += src[b * VERTS + a];
+          for (let b = Math.max(0, j - 1); b <= Math.min(lastJ, j + 1); b++) {
+            for (let a = Math.max(0, i - 1); a <= Math.min(lastI, i + 1); a++) {
+              if (!terrain.vertexActive(a, b)) continue;
+              sum += src[b * stride + a];
               n++;
             }
           }
